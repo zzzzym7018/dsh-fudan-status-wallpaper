@@ -1,0 +1,64 @@
+{
+  "name": "dsh-quota-wallpaper",
+  "version": "2.0.0",
+  "description": "Fudan · Status Bar & Wallpaper: a draggable DeepSeek quota and campus-weather status card, plus a scholarly rice-paper wallpaper set with a moon-gate plum painting.",
+  "type": "module",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "screenshots.json",
+    "assets/icon-180.png",
+    "assets/screenshot-wallpaper.jpg",
+    "CREDITS.md",
+    "assets/fudan-campus-1672.jpg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "quota",
+    "balance",
+    "status-bar",
+    "weather",
+    "wallpaper",
+    "fudan",
+    "web-ui"
+  ],
+  "license": "MIT",
+  "engines": {
+    "dsh": ">=0.2.1-rc.3 <0.3.0-0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zzzzym7018/dsh-fudan-status-wallpaper.git"
+  },
+  "homepage": "https://github.com/zzzzym7018/dsh-fudan-status-wallpaper#readme",
+  "bugs": {
+    "url": "https://github.com/zzzzym7018/dsh-fudan-status-wallpaper/issues"
+  },
+  "author": "zzzzym7018"
+}

@@ -1,0 +1,7 @@
+# dsh-quota-wallpaper bundle patch.
+# Host half: GET /api/dsh-quota/summary (DeepSeek balance + peak/off-peak pricing).
+# Client half: bottom-right quota pill, a dedicated "Quota & Wallpaper" panel,
+# and the wallpaper engine itself.
+- insert:
+    - id: dsh-quota-wallpaper
+      name: 'dsh-quota-wallpaper'
