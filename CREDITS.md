@@ -2,9 +2,10 @@
 
 ## Wallpaper / 壁纸
 
-- The campus watercolor wallpaper (`assets/fudan-campus-1672.jpg`) was supplied by
-  the project owner for this plugin. Its copyright remains with its author; the
-  MIT license below covers the plugin code, not this artwork.
+- The light and dusk campus watercolour wallpapers (`assets/fudan-campus-1672.jpg`,
+  `assets/fudan-dusk-1672.jpg`) were supplied by the project owner for this plugin.
+  Their copyright remains with their author; the MIT license below covers the
+  plugin code, not this artwork.
 - The status-card emblem is the public Fudan University emblem, used for
   personal identification. The emblem is a trademark of Fudan University and is
   not covered by the MIT license.
