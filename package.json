@@ -1,7 +1,7 @@
 {
   "name": "dsh-quota-wallpaper",
-  "version": "2.1.0",
-  "description": "Fudan · Status Bar & Wallpaper: a draggable DeepSeek quota and campus-weather status card, plus light and dusk Fudan campus watercolour wallpapers and a dedicated settings page.",
+  "version": "3.0.0",
+  "description": "Fudan · Status Bar & Wallpaper: a draggable DeepSeek quota and campus-weather status card, plus six curated Fudan campus watercolour wallpapers and a dedicated settings page.",
   "type": "module",
   "icon": "./icon.svg",
   "exports": {
@@ -24,7 +24,16 @@
     "CREDITS.md",
     "assets/fudan-campus-1672.jpg",
     "assets/fudan-dusk-1672.jpg",
-    "assets/screenshot-wallpaper-dark.jpg"
+    "assets/screenshot-wallpaper-dark.jpg",
+    "assets/fudan-morning-1672.jpg",
+    "assets/fudan-autumn-1672.jpg",
+    "assets/fudan-sunset-1672.jpg",
+    "assets/fudan-moon-1672.jpg",
+    "assets/screenshot-morning.jpg",
+    "assets/screenshot-autumn.jpg",
+    "assets/screenshot-sunset.jpg",
+    "assets/screenshot-moon.jpg",
+    "assets/fudan-collection-4up.jpg"
   ],
   "dsh": {
     "bundle": {

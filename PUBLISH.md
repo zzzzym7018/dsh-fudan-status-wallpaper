@@ -49,8 +49,8 @@ url: https://github.com/zzzzym7018/dsh-fudan-status-wallpaper
 name: zzzzym7018/dsh-fudan-status-wallpaper
 category: ui
 description:
-  en: 'Fudan-themed DeepSeek quota and campus-weather status card with a draggable layout, plus light and dusk watercolour Fudan campus wallpapers and a dedicated settings page.'
-  zh: '复旦主题的 DeepSeek 额度与校园天气状态卡（可拖动），以及日间 / 暮色水彩复旦校园壁纸与独立设置页。'
+  en: 'Fudan-themed DeepSeek quota and campus-weather status card with a draggable layout, plus six curated Fudan campus watercolour wallpapers and a dedicated settings page.'
+  zh: '复旦主题的 DeepSeek 额度与校园天气状态卡（可拖动），以及六张精选复旦校园水彩壁纸与独立设置页。'
 icon: https://raw.githubusercontent.com/zzzzym7018/dsh-fudan-status-wallpaper/main/assets/icon-180.png
 ```
 
@@ -60,7 +60,7 @@ Open a PR. After it merges, the market/index refreshes on its own schedule.
 
 The repository has been created and pushed:
 <https://github.com/zzzzym7018/dsh-fudan-status-wallpaper>
-Release v2.1.0 and the installable tarball are also published. The only
+Release v3.0.0 and the installable tarball are also published. The only
 remaining step is the `awesome-dsh-plugin` PR; it must wait until the
 repository is at least 24 hours old (GitHub's submission CI checks this).
 npm publishing is optional and still needs an `npm login` on this machine.
