@@ -1,7 +1,7 @@
 {
   "name": "dsh-quota-wallpaper",
-  "version": "3.0.0",
-  "description": "Fudan · Status Bar & Wallpaper: a draggable DeepSeek quota and campus-weather status card, plus six curated Fudan campus watercolour wallpapers and a dedicated settings page.",
+  "version": "4.0.0",
+  "description": "Fudan · Status Bar & Wallpaper: quota, campus weather, six curated campus wallpapers, and a fully local 知行台 schedule/knowledge workspace.",
   "type": "module",
   "icon": "./icon.svg",
   "exports": {
@@ -33,7 +33,15 @@
     "assets/screenshot-autumn.jpg",
     "assets/screenshot-sunset.jpg",
     "assets/screenshot-moon.jpg",
-    "assets/fudan-collection-4up.jpg"
+    "assets/fudan-collection-4up.jpg",
+    "workflow-host.js",
+    "workflow-dist/index.html",
+    "workflow-dist/app.js",
+    "workflow-dist/app.css",
+    "workflow-src/WorkspaceApp.tsx",
+    "workflow-src/globals.css",
+    "workflow-src/main.tsx",
+    "workflow-src/index.html"
   ],
   "dsh": {
     "bundle": {
@@ -57,7 +65,11 @@
     "weather",
     "wallpaper",
     "fudan",
-    "web-ui"
+    "web-ui",
+    "workflow",
+    "knowledge",
+    "schedule",
+    "local"
   ],
   "license": "MIT",
   "engines": {

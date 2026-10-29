@@ -13,6 +13,7 @@ window.__ModuleLoader__.load({
 
     const NS = 'ui-quota-wallpaper';
     const PANEL_ID = 'quota-wallpaper';
+    const WORKFLOW_PAGE_ID = 'dsh-workflow';
     const API_PATH = '/api/dsh-quota/summary';
     const SETTINGS_KEY = 'dsh-quota-wallpaper/settings/v1';
     const HISTORY_KEY = 'dsh-quota-wallpaper/history/v1';
@@ -33,10 +34,17 @@ window.__ModuleLoader__.load({
 
     const ZH = {
       'meta.title': '复旦 · 状态栏 & 壁纸',
-      'meta.description': '右下角复旦风格额度与天气状态卡（余额看板、峰谷时段、余额走势、校徽、天气与降雨），以及可调透明度、模糊、暗化与适配方式的全屏壁纸。',
+      'meta.description': '右下角复旦风格额度与天气状态卡、六张校园壁纸，以及完全在本机运行的知行台日程与知识工作台。',
       'nav.label': '复旦 · 状态栏',
+      'nav.workflow': '知行台',
+      'workflow.title': '知行台 · 本地工作台',
+      'workflow.hint': '日程、项目与领域学习；数据只保存在这台电脑。',
+      'workflow.loading': '正在打开本地工作台…',
+      'workflow.restartTitle': '需要重启 DSH',
+      'workflow.restartHint': '本地工作台的后端随 DSH 启动。请退出并重新打开 DSH，然后回到这里。',
+      'workflow.retry': '重试',
       'page.title': '复旦 · 状态栏 & 壁纸',
-      'page.subtitle': '右下角状态卡一眼看清余额、峰谷、天气与下次降雨；壁纸铺满整个界面，颜色、透明度、模糊与暗化都能调。',
+      'page.subtitle': '右下角状态卡一眼看清余额、峰谷、天气与下次降雨；六张校园壁纸可调透明度、模糊、暗化与适配；侧栏的知行台把日程、项目与知识学习留在本机。',
       'page.kicker': '日月光华 · 旦复旦兮',
       'fudan.english': 'FUDAN · 1905',
       'fudan.title': '日月光华',
@@ -155,10 +163,17 @@ window.__ModuleLoader__.load({
 
     const EN = {
       'meta.title': 'Fudan · Status Bar & Wallpaper',
-      'meta.description': 'A Fudan-inspired bottom-right quota and weather status card with a balance board, peak/off-peak pricing, sparkline, campus weather and next rain, plus a full-frame wallpaper.',
+      'meta.description': 'A Fudan-inspired quota and weather card, six campus wallpapers, and a fully local 知行台 schedule and knowledge workspace.',
       'nav.label': 'Fudan · Status',
+      'nav.workflow': 'Workspace',
+      'workflow.title': 'Workspace · Local',
+      'workflow.hint': 'Schedules, projects and learning; saved on this machine only.',
+      'workflow.loading': 'Opening the local workspace…',
+      'workflow.restartTitle': 'Restart DSH',
+      'workflow.restartHint': 'The local workspace backend starts with DSH. Quit and reopen DSH, then return here.',
+      'workflow.retry': 'Retry',
       'page.title': 'Fudan · Status Bar & Wallpaper',
-      'page.subtitle': 'A bottom-right card for balance, peak/off-peak, campus weather and next rain, plus a full-frame wallpaper whose opacity, blur, scrim and fit you control.',
+      'page.subtitle': 'A bottom-right card for balance, peak/off-peak, campus weather and next rain, six campus wallpapers, and a local 知行台 workspace for schedules, projects and learning.',
       'page.kicker': 'LIGHT OF SUN & MOON · DAY AFTER DAY',
       'fudan.english': 'FUDAN · 1905',
       'fudan.title': 'Light of Sun & Moon',
@@ -2382,6 +2397,64 @@ window.__ModuleLoader__.load({
       }, h(Emblem, { size }));
     }
 
+    function WorkflowNavIcon({ size = 20, active }) {
+      return h('span', {
+        className: cx('dqw-navIcon', 'dqw-navIconWorkflow', active && 'is-active'),
+        style: { width: size, height: size },
+      }, h('svg', {
+        width: size,
+        height: size,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.7,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': 'true',
+      },
+        h('rect', { x: 4, y: 5, width: 16, height: 15, rx: 3 }),
+        h('path', { d: 'M8 3v4M16 3v4M4 10h16' }),
+        h('path', { d: 'M8 14h3M8 17h6' }),
+      ));
+    }
+
+    function WorkflowPage({ t }) {
+      const [ready, setReady] = useState(null);
+      const [attempt, setAttempt] = useState(0);
+      useEffect(() => {
+        let alive = true;
+        setReady(null);
+        fetch('/api/dsh-workflow/health', { cache: 'no-store' })
+          .then((response) => { if (alive) setReady(response.ok); })
+          .catch(() => { if (alive) setReady(false); });
+        return () => { alive = false; };
+      }, [attempt]);
+
+      if (ready === null) {
+        return h('div', { className: 'dqw-workflowState' },
+          h('span', { className: 'dqw-workflowSpinner', 'aria-hidden': 'true' }),
+          h('p', null, t('workflow.loading')),
+        );
+      }
+      if (ready === false) {
+        return h('div', { className: 'dqw-workflowState' },
+          h('div', { className: 'dqw-workflowStateMark' }, '知'),
+          h('h2', null, t('workflow.restartTitle')),
+          h('p', null, t('workflow.restartHint')),
+          h('button', { type: 'button', className: 'dqw-workflowRetry', onClick: () => setAttempt((n) => n + 1) }, t('workflow.retry')),
+        );
+      }
+      return h('div', { className: 'dqw-workflowPage' },
+        h('iframe', {
+          className: 'dqw-workflowFrame',
+          src: '/api/dsh-workflow/app/',
+          title: t('workflow.title'),
+          loading: 'eager',
+          allow: 'clipboard-read; clipboard-write',
+        }),
+      );
+    }
+
     // ---------------------------------------------------------------------
     // Styles
     // ---------------------------------------------------------------------
@@ -2654,6 +2727,19 @@ window.__ModuleLoader__.load({
       body[data-ds-dark-theme] .dqw-kicker { color: #d9bd82; }
       .dqw-logoEmblem { width: 48px; height: 48px; overflow: visible; border-radius: 50%; box-shadow: 0 10px 24px rgba(6,22,45,.24); }
 
+      .dqw-workflowState { box-sizing: border-box; display: flex; width: 100%; height: 100%; min-height: 560px; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px; color: var(--dsw-alias-label-primary); background: #f4f7f8; text-align: center; }
+      .dqw-workflowStateMark { display: grid; width: 52px; height: 52px; place-items: center; border-radius: 16px 16px 16px 5px; color: #fff; background: #3449a4; font-family: "Songti SC", STSong, serif; font-size: 28px; box-shadow: 0 12px 26px rgba(23,35,59,.16); }
+      .dqw-workflowState h2 { margin: 4px 0 0; font-family: "Songti SC", STSong, serif; font-size: 24px; }
+      .dqw-workflowState p { max-width: 460px; margin: 0; color: var(--dsw-alias-label-secondary); font-size: 14px; line-height: 1.7; }
+      .dqw-workflowSpinner { width: 22px; height: 22px; border: 2px solid rgba(52,73,164,.2); border-top-color: #3449a4; border-radius: 50%; animation: dqw-spin .8s linear infinite; }
+      .dqw-workflowRetry { margin-top: 6px; padding: 9px 18px; border: 1px solid #cbd6df; border-radius: 10px; color: #26377d; background: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+      .dqw-workflowRetry:hover { border-color: #9babb8; }
+      @keyframes dqw-spin { to { transform: rotate(360deg); } }
+      .dqw-workflowPage { box-sizing: border-box; width: 100%; height: 100%; min-height: 560px; overflow: hidden; background: #f4f7f8; }
+      .dqw-workflowFrame { display: block; width: 100%; height: 100%; border: 0; background: #f4f7f8; }
+      .dqw-navIconWorkflow { color: var(--dsw-alias-label-secondary); }
+      .dqw-navIconWorkflow.is-active { color: var(--dsw-alias-brand-primary); }
+
       @media (max-width: 640px) {
         .dqw-page { padding: 20px 16px 72px; }
         .dqw-h1 { font-size: 21px; }
@@ -2738,7 +2824,12 @@ window.__ModuleLoader__.load({
         openPanel,
       });
       const NavEntry = (props) => h(NavIcon, props);
+      const WorkflowNavEntry = (props) => h(WorkflowNavIcon, props);
       const PageEntry = (props) => h(Page, {
+        ...props,
+        t: props.t ?? ((key) => ZH[key] ?? key),
+      });
+      const WorkflowPageEntry = (props) => h(WorkflowPage, {
         ...props,
         t: props.t ?? ((key) => ZH[key] ?? key),
       });
@@ -2763,6 +2854,20 @@ window.__ModuleLoader__.load({
         key: PANEL_ID,
         locale: NS,
       }, PageEntry));
+
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist',
+        id: WORKFLOW_PAGE_ID,
+        order: 31,
+        label: () => translate('nav.workflow'),
+        locale: NS,
+      }, WorkflowNavEntry));
+
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main',
+        key: WORKFLOW_PAGE_ID,
+        locale: NS,
+      }, WorkflowPageEntry));
 
       ctx.effect(() => () => {
         unsubscribeSettings();

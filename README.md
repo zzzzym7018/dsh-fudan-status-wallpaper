@@ -6,10 +6,11 @@
 | **晚霞** | **暮色** | **月夜** |
 | ![晚霞](assets/screenshot-sunset.jpg) | ![暮色](assets/screenshot-wallpaper-dark.jpg) | ![月夜](assets/screenshot-moon.jpg) |
 
-一个 DeepSeek Harness Web UI 插件，只做两件事：
+一个 DeepSeek Harness Web UI 插件，主要提供三件事：
 
 1. **可拖动的复旦风格额度 + 天气状态卡** —— 深蓝金边卡片，左侧是校徽徽章，中间是余额、今日消耗与 24 小时走势，下方是一条天气带：当前温度、天气、下一次降雨和校区。按住卡片可拖到任意位置，位置会记住；看板头部的准星按钮可重置回右下角。点开是一张同样风格的看板：余额、充值 / 赠送构成、今日 / 日均 / 预计可用、峰谷倒计时、体感 / 湿度 / 降雨详情，附校训「博学而笃志，切问而近思」。
 2. **全屏壁纸** —— 6 张精选复旦校园水彩：**校园、晨光、秋色、晚霞、暮色、月夜**。原来的极光、深海、晨雾、樱粉、星夜、薄荷、暮色渐变、墨白和光华楼线稿等普通预设已全部移除。也支持图片链接或本地图片，可在独立设置页里实时调整不透明度、模糊、暗化遮罩与适配方式（铺满 / 完整显示）。
+3. **知行台（本地）** —— 侧栏新增「知行台」：把今日、日程、项目、领域学习、Ideas 与疑问放进插件内的一个独立工作台。它复用你原来的 Personal Workflow UI，但完全本地运行：不需要 ChatGPT/Sites 登录，不使用 Cloudflare D1，所有数据只写入本机 DSH profile；Google Calendar 同步在本地版暂不启用。
 
 ## 壁纸库（六张）
 
@@ -25,6 +26,18 @@
 首次加载这个版本会自动切换到「复旦 · 校园」一次；其余五张都是可选壁纸，不会自动切换。选中「校园 / 晨光 / 秋色」时若当前遮罩高于 30% 会降到 22%；「晚霞 / 暮色」降到 18%；「月夜」降到 16%。
 
 壁纸版权归提供者；插件代码使用 MIT，壁纸本身不包含在 MIT 授权中。校徽为复旦大学商标，仅作个人识别。市场截图在 `screenshots.json` 中按六张排列。
+
+## 知行台（本地）
+
+侧栏的 **知行台** 是原 `personal-workflow` 的本地化版本，入口在插件内，不是外链：
+
+- **本地数据**：`~/.dsh/profiles/<profile>/data/dsh-fudan-workflow/workspace.json`（macOS 实际路径由 `DSH_PROFILE_DIR` 决定），权限 `0600`。每个使用者、每个 DSH profile 各自一份，不经过任何远端服务。
+- **首次启动**：会写入一组示例数据，方便先看界面；之后所有增删改都写回上面的 JSON。线上 D1 里的旧数据不会自动迁移；需要时可用 `GET /api/dsh-workflow/export` 导出，或直接把 `workspace.json` 备份走。
+- **范围**：今日、日程、项目、领域学习、Ideas 与疑问的读取和增删改；回顾模块仍按原项目保持停用。
+- **不启用**：ChatGPT/Sites 登录、Cloudflare D1、Google Calendar OAuth 与同步。页面里的 Google 区域会显示为本地版未配置。
+- **本机访问**：页面与 API 都沿用额度接口的本机 fence（回环 / 监听地址、同源 Origin、拒绝跨站标记）；不会因为插件安装而暴露到公网。
+- **升级后需要重启 DSH**：本地工作台的 Host 路由随 DSH 启动注册。只刷新网页不够，退出并重新打开 DSH 后，侧栏的知行台才会加载；页面会显示「需要重启 DSH」的提示和重试按钮。
+- **源码与构建**：`workflow-src/` 是可读的 React 源码（来自 `personal-workflow`），`workflow-dist/` 是已经构建好的离线 bundle；安装插件不需要 Node、pnpm 或额外依赖。
 
 ## 设计说明
 
@@ -62,7 +75,7 @@ Host 半注册 `GET /api/dsh-quota/summary`，通过凭证服务读取 `DEEPSEEK
 dsh plugin --profile <profile> add https://github.com/zzzzym7018/dsh-fudan-status-wallpaper
 ```
 
-或在 Plugins 页面安装这个仓库。安装后刷新 Web UI 即可看到右下角状态卡与左侧栏图标。
+或在 Plugins 页面安装这个仓库。安装/升级后请**退出并重新打开 DSH**（本地工作台的 Host 路由随启动注册），再刷新 Web UI；右下角状态卡、壁纸和侧栏「知行台」都会出现。
 
 ## 说明
 

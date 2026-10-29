@@ -23,6 +23,8 @@
  * (see PRICE_TABLE) because the public API exposes no price endpoint.
  */
 
+import { registerWorkflowRoutes } from './workflow-host.js';
+
 const name = 'dsh-quota-wallpaper';
 const inject = ['credentials', 'webServer'];
 
@@ -398,6 +400,7 @@ function apply(ctx) {
     'dsh-quota-wallpaper: quota summary route',
   );
 
+  registerWorkflowRoutes(ctx, bindHost);
 }
 
 export { name, inject, apply };

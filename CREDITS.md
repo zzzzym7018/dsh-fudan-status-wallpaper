@@ -21,3 +21,13 @@
 ## Weather
 
 - [Open-Meteo](https://open-meteo.com/) — free weather data, no key.
+
+## 知行台（本地）
+
+- The local workspace UI and data model are adapted from
+  [`zzzzym7018/personal-workflow`](https://github.com/zzzzym7018/personal-workflow),
+  used with the project owner's permission. The original project's Next.js /
+  Cloudflare Workers / D1 / Sites authentication code is not part of the
+  runtime; this plugin ships a local-only adapter with a JSON store.
+- The embedded UI bundle is built from `workflow-src/` with React and esbuild.
+  No external network requests are made by the local workspace.
