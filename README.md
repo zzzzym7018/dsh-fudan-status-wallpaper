@@ -25,11 +25,16 @@
 
 首次加载这个版本会自动切换到「复旦 · 校园」一次；其余五张都是可选壁纸，不会自动切换。选中「校园 / 晨光 / 秋色」时若当前遮罩高于 30% 会降到 22%；「晚霞 / 暮色」降到 18%；「月夜」降到 16%。
 
-壁纸版权归提供者；插件代码使用 MIT，壁纸本身不包含在 MIT 授权中。校徽为复旦大学商标，仅作个人识别。市场截图在 `screenshots.json` 中按六张排列。
+壁纸版权归提供者；插件代码使用 MIT，壁纸本身不包含在 MIT 授权中。校徽为复旦大学商标，仅作个人识别。市场截图在 `screenshots.json` 中排列：前两张是知行台界面，后六张是壁纸。
 
 ## 知行台（本地）
 
 侧栏的 **知行台** 是原 `personal-workflow` 的本地化版本，入口在插件内，不是外链：
+
+![知行台 · 今日](assets/workflow-today.png)
+
+- **Fudan Editorial UI**：深蓝校徽侧栏、宣纸色画布、宋体标题、香槟金细线、朱红「复旦」印章与校训；今日页是一条 bento 式总览指标带，下面是主时间轨 + 右侧行动/项目/领域栏。日历、项目、学习、Ideas 和设置共用同一套纸感卡片与金色分隔；页面自带官方校徽水印与「日月光华 · 旦复旦兮」。
+- **截图**：`assets/workflow-today.png`、`assets/workflow-calendar.png`（1440 × 960）；`assets/workflow-mobile.png`（390 × 844）。市场展示也把前两张放在最前面。
 
 - **本地数据**：`~/.dsh/profiles/<profile>/data/dsh-fudan-workflow/workspace.json`（macOS 实际路径由 `DSH_PROFILE_DIR` 决定），权限 `0600`。每个使用者、每个 DSH profile 各自一份，不经过任何远端服务。
 - **首次启动**：会写入一组示例数据，方便先看界面；之后所有增删改都写回上面的 JSON。线上 D1 里的旧数据不会自动迁移；需要时可用 `GET /api/dsh-workflow/export` 导出，或直接把 `workspace.json` 备份走。

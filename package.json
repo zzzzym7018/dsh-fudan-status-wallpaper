@@ -1,7 +1,7 @@
 {
   "name": "dsh-quota-wallpaper",
-  "version": "4.0.0",
-  "description": "Fudan · Status Bar & Wallpaper: quota, campus weather, six curated campus wallpapers, and a fully local 知行台 schedule/knowledge workspace.",
+  "version": "4.1.0",
+  "description": "Fudan · Status Bar & Wallpaper: quota, campus weather, six curated wallpapers, and a local 知行台 workspace with a Fudan editorial interface.",
   "type": "module",
   "icon": "./icon.svg",
   "exports": {
@@ -41,7 +41,13 @@
     "workflow-src/WorkspaceApp.tsx",
     "workflow-src/globals.css",
     "workflow-src/main.tsx",
-    "workflow-src/index.html"
+    "workflow-src/index.html",
+    "assets/workflow-today.png",
+    "assets/workflow-calendar.png",
+    "assets/workflow-mobile.png",
+    "workflow-dist/emblem-gold.png",
+    "workflow-dist/emblem-gold-VS4XGDHJ.png",
+    "workflow-src/emblem-gold.png"
   ],
   "dsh": {
     "bundle": {

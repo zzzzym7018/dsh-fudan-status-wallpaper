@@ -632,10 +632,12 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     <div className="workspace-shell">
       <aside className="sidebar" aria-label="主要导航">
         <div className="brand-lockup">
-          <span className="brand-mark">知</span>
+          <span className="brand-mark" aria-hidden="true">
+            <img src="./emblem-gold.png" alt="" />
+          </span>
           <div>
             <strong>知行台</strong>
-            <span>PERSONAL DESK</span>
+            <span>FUDAN · 1905</span>
           </div>
         </div>
         <nav className="nav-list">
@@ -662,6 +664,11 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
             </button>
           ))}
         </nav>
+        <div className="sidebar-quote" aria-hidden="true">
+          <span className="sidebar-quote-en">FUDAN UNIVERSITY</span>
+          <p>博学而笃志<br />切问而近思</p>
+          <span className="sidebar-quote-line" />
+        </div>
         <div className="sidebar-footer">
           <div className="profile-mark" aria-hidden="true">
             {viewer.displayName.slice(0, 1)}
@@ -713,8 +720,8 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
 
         {viewer.isPreview ? (
           <div className="preview-banner" role="status">
-            <span>本地模式</span>
-            <span>数据只保存在这台电脑；Google Calendar 同步在本地版暂不启用。</span>
+            <span>复旦 · 本地</span>
+            <span>日月光华 · 旦复旦兮　│　数据只保存在这台电脑；Google Calendar 同步在本地版暂不启用。</span>
           </div>
         ) : null}
         {error ? (
@@ -1156,7 +1163,31 @@ function TodayView({
         }
       : null;
   return (
-    <div className="today-layout page-enter">
+    <div className="today-page page-enter">
+      <section className="today-overview" aria-label="今日总览">
+        <div className="today-overview-intro">
+          <div>
+            <p className="eyebrow">日月光华 · TODAY</p>
+            <h2>今日总览</h2>
+          </div>
+          <span className="today-overview-mark" aria-hidden="true">旦</span>
+        </div>
+        <div className="today-metrics">
+          {[
+            { label: "今日日程", value: todayEvents.length, note: "场安排" },
+            { label: "今日行动", value: todayTasks.filter((task) => task.status !== "done").length, note: "项待办" },
+            { label: "推进项目", value: snapshot.projects.length, note: "个进行中" },
+            { label: "学习领域", value: snapshot.domains.length, note: "个领域" },
+          ].map((metric) => (
+            <div className="today-metric" key={metric.label}>
+              <span className="today-metric-value">{String(metric.value).padStart(2, "0")}</span>
+              <span className="today-metric-label">{metric.label}</span>
+              <span className="today-metric-note">{metric.note}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+      <div className="today-layout">
       <section className="today-primary">
         <div className={`current-slot-card ${currentSlot ? "is-active" : ""}`}>
           <div className="current-slot-accent" aria-hidden="true" />
@@ -1351,6 +1382,7 @@ function TodayView({
           </button>
         </section>
       </aside>
+      </div>
     </div>
   );
 }
@@ -1555,7 +1587,7 @@ function CalendarView({
         <div>
           <p className="eyebrow">CALENDAR</p>
           <h2>把承诺放进时间，而不是留在列表里</h2>
-          <p>日程记录几点到几点；任务记录行动日期与 DDL。站内日程与选中的 Google 日历保持双向同步。</p>
+          <p>日程记录几点到几点；任务记录行动日期与 DDL。站内日程保存在本机；Google Calendar 同步在本地版暂不启用。</p>
         </div>
         <div className="intro-actions">
           <div className="segmented" role="group" aria-label="日历视图">
@@ -1570,14 +1602,16 @@ function CalendarView({
               </button>
             ))}
           </div>
-          <button
-            className="button button--outline"
-            type="button"
-            onClick={onSync}
-            disabled={!googleStatus?.connected || syncing}
-          >
-            {syncing ? "同步中…" : "同步日历"}
-          </button>
+          {googleStatus?.configured ? (
+            <button
+              className="button button--outline"
+              type="button"
+              onClick={onSync}
+              disabled={!googleStatus?.connected || syncing}
+            >
+              {syncing ? "同步中…" : "同步日历"}
+            </button>
+          ) : null}
           <div className="calendar-create-actions" role="group" aria-label="新建内容">
             <button
               className="button button--outline"
@@ -3004,8 +3038,8 @@ function SettingsView({
       <section className="page-intro page-intro--settings">
         <div>
           <p className="eyebrow">SETTINGS</p>
-          <h2>连接与隐私</h2>
-          <p>管理私人访问、Google Calendar 同步范围和数据状态。</p>
+          <h2>数据与设置</h2>
+          <p>管理本地数据、Google Calendar（本地版暂不启用）和数据状态。</p>
         </div>
       </section>
       <section className="panel settings-panel settings-panel--calendar">
@@ -3019,7 +3053,7 @@ function SettingsView({
               <p>
                 {googleStatus?.connected
                   ? `已连接 ${googleStatus.googleEmail}`
-                  : "连接后可双向同步选中的日历。"}
+                  : "本地版暂不启用；数据仅保存在这台电脑。"}
               </p>
             </div>
           </div>
@@ -3030,7 +3064,7 @@ function SettingsView({
               ? "已连接"
               : googleStatus?.configured
                 ? "未连接"
-                : "待配置"}
+                : "本地版"}
           </span>
         </div>
         {googleStatus?.connected ? (
@@ -3091,7 +3125,7 @@ function SettingsView({
             <p>
               {googleStatus?.configured
                 ? "授权时只请求日历和邮箱信息；授权令牌只保存在服务端。"
-                : "发布后需要先配置 Google OAuth 客户端和加密密钥。"}
+                : "本地版暂不启用 Google Calendar 同步。"}
             </p>
             {googleStatus?.configured ? (
               <a className="button button--primary" href="/api/dsh-workflow/google/connect">
@@ -3099,7 +3133,7 @@ function SettingsView({
               </a>
             ) : (
               <button className="button button--outline" type="button" disabled>
-                等待 OAuth 配置
+                本地版暂不启用
               </button>
             )}
           </div>
@@ -3112,14 +3146,14 @@ function SettingsView({
               私
             </span>
             <div>
-              <h3>私人访问</h3>
-              <p>{viewer.email}</p>
+              <h3>本地身份</h3>
+              <p>local@localhost</p>
             </div>
           </div>
           <span className="connection-status is-connected">仅自己</span>
         </div>
         <p className="settings-copy">
-          所有页面和数据接口都会在服务端验证登录账号。其他账号即使拥有网址，也无法读取工作台内容。
+          应用只在本机运行；数据保存在本机 DSH profile，不经过云端账号校验。
         </p>
       </section>
       <section className="panel settings-panel settings-panel--data">
@@ -3135,8 +3169,7 @@ function SettingsView({
           </div>
         </div>
         <p className="settings-copy">
-          任务、项目、学习进度和 Ideas
-          保存在云端数据库。浏览器只保存设备级显示偏好。
+          任务、项目、学习进度和 Ideas 保存在本机 profile 的 JSON 文件；浏览器只保存显示偏好。
         </p>
       </section>
     </div>
