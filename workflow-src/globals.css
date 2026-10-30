@@ -1932,3 +1932,83 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
 @media (max-width: 760px) {
   .tt-fade--left { width: 62px; background: linear-gradient(90deg, #fffdf8 46%, rgba(255, 253, 248, 0)); }
 }
+
+/* ── 重叠合并：一个块，对角线切成两半 ───────────────────────────────────── */
+.timeline-merge {
+  position: absolute;
+  z-index: 3;
+  top: var(--event-top);
+  left: 0;
+  width: calc(100% - 6px);
+  height: var(--event-height);
+  overflow: hidden;
+  border: 1px solid #e3d3b7;
+  border-radius: 9px;
+  background: #fffdf8;
+  box-shadow: 0 6px 18px rgba(8, 29, 51, 0.06);
+}
+.timeline-merge::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 0.8px),
+    rgba(255, 253, 248, 0.95) 50%,
+    transparent calc(50% + 0.8px)
+  );
+  content: "";
+}
+.timeline-half {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 7px 10px 8px 11px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+.timeline-half--course { background: linear-gradient(100deg, #eaf1fb, #f8fbff); }
+.timeline-half--event { background: linear-gradient(100deg, #fbf4e6, #fffdf8); }
+.timeline-half--second {
+  align-items: flex-end;
+  padding: 8px 12px 8px 42%;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+.timeline-half:hover { filter: saturate(1.08) brightness(0.99); }
+.timeline-half:focus-visible { outline: 2px solid rgba(82, 103, 199, 0.55); outline-offset: -3px; }
+.timeline-half-body { display: flex; min-width: 0; flex-direction: column; gap: 1px; padding-right: 30%; }
+.timeline-half--second .timeline-half-body { padding-right: 0; }
+.timeline-half-body strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #22303f;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.timeline-half-body span,
+.timeline-half-body time {
+  overflow: hidden;
+  color: #7a715f;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-half-body time { font-family: var(--font-mono); color: #8a7350; }
+
+@media (max-width: 760px) {
+  .timeline-half { padding: 6px 8px 7px 9px; }
+  .timeline-half--second { padding: 7px 9px 7px 46%; }
+  .timeline-half-body strong { font-size: 11.5px; }
+}
+.timeline-merge { border-left: 3px solid var(--merge-accent, #c8a96a); }

@@ -2166,17 +2166,65 @@ function Timeline({
       open: () => onEditEvent(event),
     })),
   ].sort((left, right) => left.startMinute - right.startMinute);
-  // Lane layout per overlapping cluster, so a lone block keeps the full width.
-  const laidOut: Array<{
-    block: (typeof blocks)[number];
-    lane: number;
-    laneCount: number;
-  }> = [];
-  let cluster: typeof blocks = [];
-  let clusterEnd = Number.NEGATIVE_INFINITY;
-  const flushCluster = () => {
+  // Group blocks that touch in time. A pair that overlaps for a while merges
+  // into one block split by a diagonal; anything else falls back to lanes.
+  type TimelineBlock = (typeof blocks)[number];
+  type Cluster = { blocks: TimelineBlock[]; startMinute: number; endMinute: number };
+  const clusters: Cluster[] = [];
+  let current: TimelineBlock[] = [];
+  let currentEnd = Number.NEGATIVE_INFINITY;
+  for (const block of blocks) {
+    if (!current.length) {
+      current = [block];
+      currentEnd = block.endMinute;
+      continue;
+    }
+    if (block.startMinute >= currentEnd) {
+      clusters.push({ blocks: current, startMinute: current[0].startMinute, endMinute: currentEnd });
+      current = [block];
+      currentEnd = block.endMinute;
+      continue;
+    }
+    current.push(block);
+    currentEnd = Math.max(currentEnd, block.endMinute);
+  }
+  if (current.length) {
+    clusters.push({ blocks: current, startMinute: current[0].startMinute, endMinute: currentEnd });
+  }
+
+  const nowMinute = shanghaiClockMinutes(new Date(now));
+  type RenderItem =
+    | {
+        type: "single";
+        block: TimelineBlock;
+        lane: number;
+        laneCount: number;
+        top: string;
+        height: string;
+      }
+    | {
+        type: "merged";
+        first: TimelineBlock;
+        second: TimelineBlock;
+        top: string;
+        height: string;
+      };
+  const renderItems: RenderItem[] = [];
+  for (const cluster of clusters) {
+    const span = cluster.endMinute - cluster.startMinute;
+    if (cluster.blocks.length === 2 && span >= 75) {
+      const geometry = blockGeometryFromMinutes(cluster.startMinute, cluster.endMinute);
+      renderItems.push({
+        type: "merged",
+        first: cluster.blocks[0],
+        second: cluster.blocks[1],
+        top: geometry.top,
+        height: geometry.height,
+      });
+      continue;
+    }
     const laneEnds: number[] = [];
-    const placed = cluster.map((block) => {
+    const placed = cluster.blocks.map((block) => {
       let lane = laneEnds.findIndex((end) => end <= block.startMinute);
       if (lane === -1) {
         lane = laneEnds.length;
@@ -2187,16 +2235,18 @@ function Timeline({
       return { block, lane };
     });
     const laneCount = Math.max(1, laneEnds.length);
-    for (const item of placed) laidOut.push({ ...item, laneCount });
-    cluster = [];
-  };
-  for (const block of blocks) {
-    if (cluster.length && block.startMinute >= clusterEnd) flushCluster();
-    cluster.push(block);
-    clusterEnd = Math.max(clusterEnd, block.endMinute);
-    if (cluster.length === 1) clusterEnd = block.endMinute;
+    for (const item of placed) {
+      const geometry = blockGeometryFromMinutes(item.block.startMinute, item.block.endMinute);
+      renderItems.push({
+        type: "single",
+        block: item.block,
+        lane: item.lane,
+        laneCount,
+        top: geometry.top,
+        height: geometry.height,
+      });
+    }
   }
-  if (cluster.length) flushCluster();
 
   useEffect(() => {
     const scrollArea = scrollRef.current;
@@ -2274,25 +2324,62 @@ function Timeline({
             </div>
           ) : null}
           <div className="timeline-lanes">
-            {laidOut.map(({ block, lane, laneCount }) => {
-              const geometry = blockGeometryFromMinutes(block.startMinute, block.endMinute);
-              const minutesNow = shanghaiClockMinutes(new Date(now));
-              const isCurrent =
-                block.startMinute <= minutesNow && minutesNow < block.endMinute;
+            {renderItems.map((item) => {
+              if (item.type === "merged") {
+                return (
+                  <div
+                    className="timeline-merge"
+                    key={`merge-${item.first.key}-${item.second.key}`}
+                    style={
+                      {
+                        "--event-top": item.top,
+                        "--event-height": item.height,
+                        "--merge-accent": item.first.color,
+                      } as CSSProperties
+                    }
+                  >
+                    {[item.first, item.second].map((block, index) => (
+                      <button
+                        key={block.key}
+                        type="button"
+                        className={`timeline-half timeline-half--${block.kind} ${
+                          index === 1 ? "timeline-half--second" : ""
+                        } ${
+                          block.startMinute <= nowMinute && nowMinute < block.endMinute
+                            ? "is-current"
+                            : ""
+                        }`}
+                        style={{ "--event-color": block.color } as CSSProperties}
+                        aria-label={block.aria}
+                        onClick={block.open}
+                      >
+                        <span className="timeline-half-body">
+                          <strong>{block.title}</strong>
+                          <span>{block.meta}</span>
+                          <time>{block.time}</time>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              }
+              const { block } = item;
               return (
                 <button
                   type="button"
                   key={block.key}
                   className={`timeline-event timeline-block timeline-${block.kind} ${
-                    isCurrent ? "is-current" : ""
+                    block.startMinute <= nowMinute && nowMinute < block.endMinute
+                      ? "is-current"
+                      : ""
                   }`}
                   style={
                     {
-                      "--event-top": geometry.top,
-                      "--event-height": geometry.height,
+                      "--event-top": item.top,
+                      "--event-height": item.height,
                       "--event-color": block.color,
-                      "--block-left": `${(lane / laneCount) * 100}%`,
-                      "--block-width": `calc(${100 / laneCount}% - 6px)`,
+                      "--block-left": `${(item.lane / item.laneCount) * 100}%`,
+                      "--block-width": `calc(${100 / item.laneCount}% - 6px)`,
                     } as CSSProperties
                   }
                   aria-label={block.aria}
