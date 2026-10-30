@@ -33,17 +33,35 @@
 
 ![知行台 · 今日](assets/workflow-today.png)
 
+> 截图摄于加入「课表」之前；课表与提醒目前只有代码与测试，还没有重拍的市场截图。
+
 - **Fudan Editorial UI**：深蓝校徽侧栏、宣纸色画布、宋体标题、香槟金细线、朱红「复旦」印章与校训；今日页是一条 bento 式总览指标带，下面是主时间轨 + 右侧行动/项目/领域栏。日历、项目、学习、Ideas 和设置共用同一套纸感卡片与金色分隔；页面自带官方校徽水印与「日月光华 · 旦复旦兮」。
+- **课表（v2 新增）**：按「第 1 周周一 + 总周数」建立学期，课程由「星期 + 节次区间 + 周次」描述，支持单双周与分段周次（`1-8`、`1-16单`、`2,4,6`）。课表页是一张 7 × 13 的周网格，可切换周次，今天整列高亮；同一格冲突时自动并排。点空格新增一节课，点课程块编辑或删除。
+- **今日页（v2 重做）**：总览指标改为「今日课程 / 今日行动 / 本周 DDL / 推进项目」；新增今日课程条带；时间轨把当天的课程、日程与定时任务合并到同一条 08:00–24:00 的轨道上；右栏新增「临近 DDL」。
+- **提醒（v2 新增）**：每日摘要（当天第一次打开、且过了设定时间）与 DDL 提前提醒（默认 24/2 小时，可开关），在页面内以 toast 呈现；浏览器授权后同时发系统通知。顶栏铃铛汇总今天课程与未来 7 天 DDL。
+- **个人画像（v2 起步）**：默认是空的，只保留一个 `FDUer` 称呼，可在设置页改；画像声明（作息、偏好、擅长科目）留给下一版，数据结构已经预留 `profile.claims`。
 - **周历回顾**：日程页支持「← 上一周 / 本周 / 下一周 →」，从周一开始显示完整一周；时间轨顶部留白，08:00 标签不会被卡片或粘性表头遮住。
 - **截图**：`assets/workflow-today.png`、`assets/workflow-calendar.png`（1440 × 960）；`assets/workflow-mobile.png`（390 × 844）。市场展示也把前两张放在最前面。
 
 - **本地数据**：`~/.dsh/profiles/<profile>/data/dsh-fudan-workflow/workspace.json`（macOS 实际路径由 `DSH_PROFILE_DIR` 决定），权限 `0600`。每个使用者、每个 DSH profile 各自一份，不经过任何远端服务。
+- **数据结构版本**：文件里的 `version` 现在是 `2`。旧的 `version: 1` 文件会在首次读取时自动补齐 `profile / settings / semesters / courses / courseSlots`（不删旧数据，也不写入示例课表），然后原子写回。
 - **首次启动**：会写入一组示例数据，方便先看界面；之后所有增删改都写回上面的 JSON。线上 D1 里的旧数据不会自动迁移；需要时可用 `GET /api/dsh-workflow/export` 导出，或直接把 `workspace.json` 备份走。
-- **范围**：今日、日程、项目、领域学习、Ideas 与疑问的读取和增删改；回顾模块仍按原项目保持停用。
+- **示例与清空**：设置页可以「恢复示例数据」或「清空为空白工作台」；课表为空时也可以单独「载入示例课表」，它不会覆盖已有学期。
+- **范围**：课表、今日、日程、项目、领域学习、Ideas 与疑问、提醒与设置的读取和增删改；回顾模块仍按原项目保持停用。
 - **不启用**：ChatGPT/Sites 登录、Cloudflare D1、Google Calendar OAuth 与同步。页面里的 Google 区域会显示为本地版未配置。
 - **本机访问**：页面与 API 都沿用额度接口的本机 fence（回环 / 监听地址、同源 Origin、拒绝跨站标记）；不会因为插件安装而暴露到公网。
 - **升级后需要重启 DSH**：本地工作台的 Host 路由随 DSH 启动注册。只刷新网页不够，退出并重新打开 DSH 后，侧栏的知行台才会加载；页面会显示「需要重启 DSH」的提示和重试按钮。
 - **源码与构建**：`workflow-src/` 是可读的 React 源码（来自 `personal-workflow`），`workflow-dist/` 是已经构建好的离线 bundle；安装插件不需要 Node、pnpm 或额外依赖。
+
+### 课表相关接口
+
+`workflow-host.js` 在原有实体之外新增了三类数据，沿用同一套 `POST / PATCH / DELETE /api/dsh-workflow/workspace` 约定：
+
+- `semester`：`name`、`startDate`（自动对齐到周一）、`weekCount`、`isActive`。
+- `course`：`name`、`teacher`、`color`、`credits`、`semesterId`。
+- `courseSlot`：`courseId` 或 `courseName`（同名复用同一门课）、`weekday`（1–7）、`startPeriod` / `endPeriod`（1–13）、`weeks`（`"1-16单"` 或数组）、`location`。
+
+另有 `PATCH /api/dsh-workflow/profile`、`PATCH /api/dsh-workflow/settings`、`POST /api/dsh-workflow/timetable/demo`、`POST /api/dsh-workflow/store/reset`（`{"mode":"empty"|"demo"}`）。删除最后一节课时，课程行会一起清理；删除学期会连带它的课程与时间。
 
 ## 设计说明
 

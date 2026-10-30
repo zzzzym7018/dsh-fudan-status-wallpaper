@@ -17,6 +17,7 @@ import {
 
 type ViewKey =
   | "today"
+  | "courses"
   | "calendar"
   | "projects"
   | "learning"
@@ -117,6 +118,12 @@ type CalendarEvent = {
   updatedAt: string;
 };
 type Snapshot = {
+  profile: Profile;
+  settings: Settings;
+  semesters: Semester[];
+  activeSemesterId: string | null;
+  courses: Course[];
+  courseSlots: CourseSlot[];
   projects: Project[];
   tasks: Task[];
   domains: Domain[];
@@ -125,6 +132,62 @@ type Snapshot = {
   ideas: Idea[];
   events: CalendarEvent[];
   viewer: Viewer;
+};
+type Profile = {
+  nickname: string;
+  school: string;
+  claims: unknown[];
+};
+type CoursePeriod = { index: number; start: string; end: string };
+type ReminderSettings = {
+  enabled: boolean;
+  dailyDigest: boolean;
+  digestTime: string;
+  leadHours: number[];
+};
+type Settings = { periodTimes: CoursePeriod[]; reminders: ReminderSettings };
+type Semester = {
+  id: string;
+  name: string;
+  startDate: string;
+  weekCount: number;
+  isActive: boolean;
+  note: string;
+};
+type Course = {
+  id: string;
+  semesterId: string;
+  name: string;
+  teacher: string;
+  code: string;
+  credits: number;
+  color: string;
+  note: string;
+};
+type CourseSlot = {
+  id: string;
+  courseId: string;
+  weekday: number;
+  startPeriod: number;
+  endPeriod: number;
+  weeks: number[];
+  location: string;
+  note: string;
+};
+/** One dated occurrence of a timetable slot. */
+type CourseSession = {
+  slotId: string;
+  courseId: string;
+  dateKey: string;
+  title: string;
+  teacher: string;
+  location: string;
+  color: string;
+  start: string;
+  end: string;
+  startMinute: number;
+  endMinute: number;
+  periods: string;
 };
 type GoogleCalendar = {
   id: string;
@@ -159,6 +222,7 @@ const temporarilyDisabledViews = new Set<ViewKey>(["review"]);
 
 const allNavigation: Array<{ key: ViewKey; label: string; mark: string }> = [
   { key: "today", label: "今日", mark: "今" },
+  { key: "courses", label: "课表", mark: "课" },
   { key: "calendar", label: "日程", mark: "历" },
   { key: "projects", label: "项目", mark: "项" },
   { key: "learning", label: "领域学习", mark: "域" },
@@ -171,8 +235,18 @@ const navigation = allNavigation.filter(
   (item) => !temporarilyDisabledViews.has(item.key),
 );
 
+/** The five destinations a phone-sized bottom bar can hold comfortably. */
+const mobileNavigation: ViewKey[] = [
+  "today",
+  "courses",
+  "calendar",
+  "projects",
+  "learning",
+];
+
 const viewTitles: Record<ViewKey, string> = {
   today: "今日",
+  courses: "课表",
   calendar: "日程",
   projects: "项目",
   learning: "领域学习",
@@ -180,6 +254,8 @@ const viewTitles: Record<ViewKey, string> = {
   review: "回顾",
   settings: "设置",
 };
+
+const weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"];
 
 const stageLabels = [
   "尚未开始",
@@ -218,6 +294,13 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [googleStatus, setGoogleStatus] = useState<GoogleStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [courseEditor, setCourseEditor] = useState<{
+    id: string | null;
+    draft: EditorDraft;
+  } | null>(null);
+  const [courseError, setCourseError] = useState("");
+  const [savingCourse, setSavingCourse] = useState(false);
+  const [reminderOpen, setReminderOpen] = useState(false);
   const quickAddRef = useRef<HTMLButtonElement>(null);
   const editorReturnFocusIdRef = useRef<string | null>(null);
 
@@ -509,7 +592,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
   }
 
   async function updateItem(
-    entity: EntityName,
+    entity: EntityName | "semester",
     id: string,
     data: Record<string, unknown>,
     message = "更改已保存",
@@ -618,6 +701,185 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     }
   }
 
+  function openCourseEditor(
+    defaults: EditorDraft = {},
+    slot?: { id: string; courseId: string },
+  ) {
+    setCourseError("");
+    const semester = activeSemesterOf(snapshot);
+    const course = slot
+      ? snapshot?.courses.find((item) => item.id === slot.courseId)
+      : undefined;
+    const existing = slot
+      ? snapshot?.courseSlots.find((item) => item.id === slot.id)
+      : undefined;
+    setCourseEditor({
+      id: slot?.id ?? null,
+      draft: {
+        semesterId: semester?.id ?? "",
+        weekday: String(existing?.weekday ?? isoWeekdayOf(localDateKey(new Date()))),
+        startPeriod: String(existing?.startPeriod ?? 1),
+        endPeriod: String(existing?.endPeriod ?? 2),
+        weeks: existing ? existing.weeks.join(",") : "",
+        courseName: course?.name ?? "",
+        teacher: course?.teacher ?? "",
+        location: existing?.location ?? "",
+        color: course?.color ?? "#0d2f5a",
+        ...defaults,
+      },
+    });
+  }
+
+  async function saveCourse(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!courseEditor) return;
+    const { id, draft: values } = courseEditor;
+    if (!values.courseName?.trim()) {
+      setCourseError("请先填写课程名称。");
+      return;
+    }
+    const startPeriod = Math.max(1, Math.min(13, Number(values.startPeriod) || 1));
+    const endPeriod = Math.max(startPeriod, Math.min(13, Number(values.endPeriod) || startPeriod));
+    const data: Record<string, unknown> = {
+      semesterId: values.semesterId || null,
+      courseName: values.courseName,
+      teacher: values.teacher ?? "",
+      location: values.location ?? "",
+      color: values.color ?? "#0d2f5a",
+      weekday: Number(values.weekday) || 1,
+      startPeriod,
+      endPeriod,
+      weeks: values.weeks ?? "",
+    };
+    setSavingCourse(true);
+    setCourseError("");
+    try {
+      const response = await fetch("/api/dsh-workflow/workspace", {
+        method: id ? "PATCH" : "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entity: "courseSlot", ...(id ? { id } : {}), data }),
+      });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error || "保存失败，请重试。");
+      await loadWorkspace();
+      setCourseEditor(null);
+      notify(id ? "课程时间已更新" : "课程已加入课表");
+    } catch (reason) {
+      setCourseError(reason instanceof Error ? reason.message : "保存失败，请重试。");
+    } finally {
+      setSavingCourse(false);
+    }
+  }
+
+  async function deleteCourseSlot(slotId: string) {
+    setSavingCourse(true);
+    try {
+      const response = await fetch("/api/dsh-workflow/workspace", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entity: "courseSlot", id: slotId, action: "delete" }),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      setCourseEditor(null);
+      notify("课程时间已删除", "warning");
+    } catch {
+      setCourseError("未能删除，请重试。");
+    } finally {
+      setSavingCourse(false);
+    }
+  }
+
+  async function saveProfile(next: { nickname?: string }) {
+    try {
+      const response = await fetch("/api/dsh-workflow/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      notify("身份已更新");
+    } catch {
+      notify("未能保存，请重试", "error");
+    }
+  }
+
+  async function saveSettings(next: { reminders?: Partial<ReminderSettings>; periodTimes?: CoursePeriod[] }) {
+    try {
+      const response = await fetch("/api/dsh-workflow/settings", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      notify("设置已保存");
+    } catch {
+      notify("设置未保存，请重试", "error");
+    }
+  }
+
+  async function saveSemester(semester: Semester, patch: Record<string, unknown>) {
+    await updateItem("semester", semester.id, patch, "学期已更新");
+  }
+
+  async function createSemester() {
+    setSaving(true);
+    try {
+      const response = await fetch("/api/dsh-workflow/workspace", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          entity: "semester",
+          data: {
+            name: `${new Date().getFullYear()} 学年 学期`,
+            startDate: mondayKeyOf(todayKey),
+            weekCount: 16,
+            isActive: true,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      notify("学期已创建，现在可以添加课程");
+    } catch {
+      notify("未能创建学期", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadDemoTimetable() {
+    try {
+      const response = await fetch("/api/dsh-workflow/timetable/demo", { method: "POST" });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error || "无法载入示例课表。");
+      await loadWorkspace();
+      notify("示例课表已载入，可以按自己的课表修改");
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "无法载入示例课表。", "error");
+    }
+  }
+
+  async function resetStore(mode: "empty" | "demo") {
+    setSaving(true);
+    try {
+      const response = await fetch("/api/dsh-workflow/store/reset", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      notify(mode === "empty" ? "已清空为空白工作台" : "已恢复示例数据", "warning");
+    } catch {
+      notify("未能重置，请重试", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const viewer = snapshot?.viewer ?? initialViewer;
   const today = new Date();
   const todayKey = localDateKey(today);
@@ -628,6 +890,39 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
       ),
     [snapshot, todayKey],
   );
+  const semester = activeSemesterOf(snapshot);
+  const weekInfo = useMemo(
+    () => (semester ? semesterWeekAt(semester, todayKey) : null),
+    [semester, todayKey],
+  );
+  const todaySessions = useMemo(
+    () => sessionsForDate(snapshot, todayKey),
+    [snapshot, todayKey],
+  );
+  const deadlines = useMemo(
+    () => upcomingDeadlines(snapshot?.tasks ?? [], todayKey, 7),
+    [snapshot, todayKey],
+  );
+  const dueSoon = useMemo(
+    () =>
+      deadlines.filter(
+        (task) =>
+          task.dueDate && hoursUntilDate(task.dueDate, Date.now()) <= 48 && task.dueDate >= todayKey,
+      ),
+    [deadlines, todayKey],
+  );
+  const reminderCount = todaySessions.length + dueSoon.length;
+
+  useReminderEngine({
+    snapshot,
+    todayKey,
+    todaySessions,
+    deadlines,
+    semester,
+    weekInfo,
+    notify,
+  });
+
   return (
     <div className="workspace-shell">
       <aside className="sidebar" aria-label="主要导航">
@@ -687,6 +982,47 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
             <h1>{viewTitles[activeView]}</h1>
           </div>
           <div className="topbar-actions">
+            <div className="reminder-anchor">
+              <button
+                className={`reminder-trigger ${reminderCount ? "has-items" : ""}`}
+                type="button"
+                aria-label={`提醒，${reminderCount} 项待关注`}
+                aria-expanded={reminderOpen}
+                onClick={() => setReminderOpen((value) => !value)}
+              >
+                <span aria-hidden="true">铃</span>
+                {reminderCount ? <b aria-hidden="true">{reminderCount}</b> : null}
+              </button>
+              {reminderOpen ? (
+                <ReminderPanel
+                  sessions={todaySessions}
+                  deadlines={deadlines}
+                  weekLabel={
+                    weekInfo && weekInfo.inTerm ? `第 ${weekInfo.week} 周` : "假期"
+                  }
+                  reminders={snapshot?.settings?.reminders}
+                  onClose={() => setReminderOpen(false)}
+                  onOpenWeek={() => {
+                    setReminderOpen(false);
+                    navigate("courses");
+                  }}
+                  onEditTask={openTaskEditor}
+                  onRequestPermission={async () => {
+                    if (!("Notification" in window)) {
+                      notify("这个浏览器不支持系统通知", "warning");
+                      return;
+                    }
+                    const permission = await Notification.requestPermission();
+                    notify(
+                      permission === "granted"
+                        ? "系统通知已开启"
+                        : "未开启系统通知，提醒仍会显示在页面里",
+                      permission === "granted" ? "success" : "warning",
+                    );
+                  }}
+                />
+              ) : null}
+            </div>
             <button
               className="search-trigger"
               type="button"
@@ -699,7 +1035,15 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
               ref={quickAddRef}
               className="button button--primary"
               type="button"
-              onClick={() =>
+              onClick={() => {
+                if (activeView === "courses") {
+                  openCourseEditor({
+                    weekday: String(isoWeekdayOf(todayKey)),
+                    startPeriod: "1",
+                    endPeriod: "2",
+                  });
+                  return;
+                }
                 openEditor(
                   activeView === "calendar"
                     ? "event"
@@ -710,8 +1054,8 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                       : activeView === "learning"
                         ? "learningLog"
                         : "task",
-                )
-              }
+                );
+              }}
             >
               ＋ 快速添加
             </button>
@@ -751,8 +1095,15 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                 <TodayView
                   snapshot={snapshot}
                   todayEvents={todayEvents}
+                  todaySessions={todaySessions}
+                  deadlines={deadlines}
+                  semester={semester}
+                  weekInfo={weekInfo}
                   todayKey={todayKey}
                   onNavigate={navigate}
+                  onOpenCourse={(session) =>
+                    openCourseEditor({}, { id: session.slotId, courseId: session.courseId })
+                  }
                   onToggleTask={(task) =>
                     updateItem(
                       "task",
@@ -776,6 +1127,19 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                         : "该任务将被永久删除，且无法恢复。",
                     })
                   }
+                />
+              ) : null}
+              {activeView === "courses" ? (
+                <TimetableView
+                  snapshot={snapshot}
+                  todayKey={todayKey}
+                  onCreateAt={(weekday, period) =>
+                    openCourseEditor({ weekday: String(weekday), startPeriod: String(period), endPeriod: String(period + 1) })
+                  }
+                  onEditSlot={(slotId, courseId) => openCourseEditor({}, { id: slotId, courseId })}
+                  onCreateSemester={() => setActiveView("settings")}
+                  onLoadDemo={loadDemoTimetable}
+                  onSaveSemester={saveSemester}
                 />
               ) : null}
               {activeView === "calendar" ? (
@@ -916,12 +1280,22 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
               {activeView === "settings" ? (
                 <SettingsView
                   viewer={viewer}
+                  profile={snapshot.profile}
+                  settings={snapshot.settings}
+                  semester={semester}
+                  weekInfo={weekInfo}
                   googleStatus={googleStatus}
                   setGoogleStatus={setGoogleStatus}
                   onRefresh={loadGoogleStatus}
                   onSync={syncGoogle}
                   syncing={syncing}
                   notify={notify}
+                  onSaveProfile={saveProfile}
+                  onSaveSettings={saveSettings}
+                  onSaveSemester={saveSemester}
+                  onCreateSemester={createSemester}
+                  onLoadDemo={loadDemoTimetable}
+                  onReset={resetStore}
                 />
               ) : null}
             </>
@@ -930,18 +1304,22 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
       </div>
 
       <nav className="mobile-nav" aria-label="移动端主要导航">
-        {navigation.slice(0, 5).map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            className={activeView === item.key ? "is-current" : ""}
-            aria-current={activeView === item.key ? "page" : undefined}
-            onClick={() => navigate(item.key)}
-          >
-            <span aria-hidden="true">{item.mark}</span>
-            {item.label.replace("Ideas 与疑问", "Ideas")}
-          </button>
-        ))}
+        {mobileNavigation.map((key) => {
+          const item = navigation.find((entry) => entry.key === key);
+          if (!item) return null;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              className={activeView === item.key ? "is-current" : ""}
+              aria-current={activeView === item.key ? "page" : undefined}
+              onClick={() => navigate(item.key)}
+            >
+              <span aria-hidden="true">{item.mark}</span>
+              {item.label.replace("Ideas 与疑问", "Ideas")}
+            </button>
+          );
+        })}
       </nav>
 
       {editor ? (
@@ -1042,6 +1420,29 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
           }
         />
       ) : null}
+      {courseEditor ? (
+        <CourseDialog
+          draft={courseEditor.draft}
+          setDraft={(next) =>
+            setCourseEditor((current) =>
+              current ? { ...current, draft: next } : current,
+            )
+          }
+          editing={Boolean(courseEditor.id)}
+          error={courseError}
+          saving={savingCourse}
+          periods={periodTimesOf(snapshot?.settings)}
+          semester={semester}
+          courses={snapshot?.courses ?? []}
+          onClose={() => setCourseEditor(null)}
+          onSubmit={saveCourse}
+          onDelete={
+            courseEditor.id
+              ? () => deleteCourseSlot(courseEditor.id as string)
+              : undefined
+          }
+        />
+      ) : null}
       {searchOpen ? (
         <SearchDialog
           snapshot={snapshot}
@@ -1110,6 +1511,10 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
 function TodayView({
   snapshot,
   todayEvents,
+  todaySessions,
+  deadlines,
+  semester,
+  weekInfo,
   todayKey,
   onNavigate,
   onToggleTask,
@@ -1117,9 +1522,14 @@ function TodayView({
   onEditTask,
   onEditEvent,
   onDeleteTask,
+  onOpenCourse,
 }: {
   snapshot: Snapshot;
   todayEvents: CalendarEvent[];
+  todaySessions: CourseSession[];
+  deadlines: Task[];
+  semester: Semester | null;
+  weekInfo: { week: number; inTerm: boolean } | null;
   todayKey: string;
   onNavigate: (view: ViewKey) => void;
   onToggleTask: (task: Task) => void;
@@ -1127,10 +1537,15 @@ function TodayView({
   onEditTask: (task: Task) => void;
   onEditEvent: (event: CalendarEvent) => void;
   onDeleteTask: (task: Task) => void;
+  onOpenCourse: (session: CourseSession) => void;
 }) {
   const now = useCurrentTime();
+  const nowMinute = shanghaiClockMinutes(new Date(now));
   const todayTasks = snapshot.tasks.filter((task) =>
     taskAppearsInToday(task, todayKey),
+  );
+  const currentSession = todaySessions.find(
+    (session) => session.startMinute <= nowMinute && nowMinute < session.endMinute,
   );
   const currentEvent = todayEvents.find(
     (item) =>
@@ -1145,39 +1560,49 @@ function TodayView({
       new Date(task.startAt).getTime() <= now &&
       now < new Date(task.endAt).getTime(),
   );
-  const currentSlot = currentEvent
+  const currentSlot = currentSession
     ? {
-        title: currentEvent.title,
-        startAt: currentEvent.startAt,
-        endAt: currentEvent.endAt,
-        projectId: currentEvent.projectId,
-        kind: "event" as const,
+        title: currentSession.title,
+        time: `${currentSession.start}—${currentSession.end}`,
+        detail: `课程 · ${currentSession.periods}${currentSession.location ? ` · ${currentSession.location}` : ""}`,
+        kind: "course" as const,
       }
-    : currentTask?.startAt && currentTask.endAt
+    : currentEvent
       ? {
-          title: currentTask.title,
-          startAt: currentTask.startAt,
-          endAt: currentTask.endAt,
-          projectId: currentTask.projectId,
-          kind: "task" as const,
+          title: currentEvent.title,
+          time: `${formatTime(currentEvent.startAt)}—${formatTime(currentEvent.endAt)}`,
+          detail: "日程",
+          kind: "event" as const,
         }
-      : null;
+      : currentTask?.startAt && currentTask.endAt
+        ? {
+            title: currentTask.title,
+            time: `${formatTime(currentTask.startAt)}—${formatTime(currentTask.endAt)}`,
+            detail: currentTask.projectId ? "项目子目标" : "计划任务",
+            kind: "task" as const,
+          }
+        : null;
+  const weekLabel = semester
+    ? weekInfo?.inTerm
+      ? `第 ${weekInfo.week} 周 / 共 ${semester.weekCount} 周`
+      : "不在教学周内"
+    : "还没有学期";
   return (
     <div className="today-page page-enter">
       <section className="today-overview" aria-label="今日总览">
         <div className="today-overview-intro">
           <div>
-            <p className="eyebrow">日月光华 · TODAY</p>
+            <p className="eyebrow">{weekLabel} · TODAY</p>
             <h2>今日总览</h2>
           </div>
           <span className="today-overview-mark" aria-hidden="true">旦</span>
         </div>
         <div className="today-metrics">
           {[
-            { label: "今日日程", value: todayEvents.length, note: "场安排" },
+            { label: "今日课程", value: todaySessions.length, note: "门课程" },
             { label: "今日行动", value: todayTasks.filter((task) => task.status !== "done").length, note: "项待办" },
+            { label: "本周 DDL", value: deadlines.length, note: "个截止" },
             { label: "推进项目", value: snapshot.projects.length, note: "个进行中" },
-            { label: "学习领域", value: snapshot.domains.length, note: "个领域" },
           ].map((metric) => (
             <div className="today-metric" key={metric.label}>
               <span className="today-metric-value">{String(metric.value).padStart(2, "0")}</span>
@@ -1196,13 +1621,7 @@ function TodayView({
             <h2>{currentSlot?.title ?? "当前时段暂无安排"}</h2>
             <p>
               {currentSlot
-                ? `${formatTime(currentSlot.startAt)}—${formatTime(currentSlot.endAt)} · ${
-                    currentSlot.kind === "task"
-                      ? currentSlot.projectId
-                        ? "项目子目标"
-                        : "计划任务"
-                      : "日程"
-                  }`
+                ? `${currentSlot.time} · ${currentSlot.detail}`
                 : "查看下方时间轨，或为当前时段添加一项安排。"}
             </p>
           </div>
@@ -1210,18 +1629,79 @@ function TodayView({
             className="button button--outline"
             type="button"
             onClick={() =>
-              currentSlot ? onNavigate("calendar") : onOpenEditor("event")
+              currentSlot
+                ? onNavigate(currentSlot.kind === "course" ? "courses" : "calendar")
+                : onOpenEditor("event")
             }
           >
-            {currentSlot ? "查看日程" : "安排当前时段"}
+            {currentSlot
+              ? currentSlot.kind === "course"
+                ? "查看课表"
+                : "查看日程"
+              : "安排当前时段"}
           </button>
         </div>
+        <section className="panel today-courses" aria-label="今日课程">
+          <div className="today-courses-head">
+            <div>
+              <p className="eyebrow">TIMETABLE</p>
+              <h2>今日课程</h2>
+            </div>
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => onNavigate("courses")}
+            >
+              完整课表
+            </button>
+          </div>
+          {todaySessions.length ? (
+            <div className="today-course-strip" role="list">
+              {todaySessions.map((session) => (
+                <button
+                  key={session.slotId}
+                  className="today-course"
+                  type="button"
+                  role="listitem"
+                  style={{ "--course-color": session.color } as CSSProperties}
+                  onClick={() => onOpenCourse(session)}
+                >
+                  <span className="today-course-time">
+                    {session.start}—{session.end}
+                  </span>
+                  <strong>{session.title}</strong>
+                  <span className="today-course-meta">
+                    {session.periods}
+                    {session.location ? ` · ${session.location}` : ""}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="today-courses-empty">
+              {semester
+                ? weekInfo?.inTerm
+                  ? "今天没有课。"
+                  : "现在不在教学周内，课表按周次显示。"
+                : "还没有课表。先创建学期，再把课程加进来。"}
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => onNavigate("courses")}
+              >
+                {semester ? "打开课表" : "创建课表"}
+              </button>
+            </p>
+          )}
+        </section>
         <Timeline
           events={todayEvents}
+          sessions={todaySessions}
           now={now}
           dateKey={todayKey}
           onCreateAt={(defaults) => onOpenEditor("event", defaults)}
           onEditEvent={onEditEvent}
+          onOpenCourse={onOpenCourse}
         />
       </section>
       <aside className="context-column">
@@ -1297,6 +1777,37 @@ function TodayView({
               />
             )}
           </div>
+        </section>
+        <section className="panel compact-panel context-panel context-panel--ddl">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">DEADLINE</p>
+              <h2>临近 DDL</h2>
+            </div>
+            <span>未来 7 天</span>
+          </div>
+          {deadlines.length ? (
+            <ul className="deadline-list" aria-label={`临近 DDL，共 ${deadlines.length} 项`}>
+              {deadlines.slice(0, 6).map((task) => (
+                <li key={task.id}>
+                  <button
+                    type="button"
+                    className="deadline-row"
+                    onClick={() => onEditTask(task)}
+                    aria-label={`编辑任务 ${task.title}`}
+                  >
+                    <span className={`deadline-day ${deadlineTone(task.dueDate as string)}`}>
+                      {formatShortDate(task.dueDate as string)}
+                    </span>
+                    <strong>{task.title}</strong>
+                    <small>{deadlineDistanceLabel(task.dueDate as string)}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="deadline-empty">未来 7 天没有 DDL。</p>
+          )}
         </section>
         <section className="panel compact-panel context-panel context-panel--projects">
           <div className="panel-heading">
@@ -1418,16 +1929,20 @@ function ProjectSummaryItem({
 
 function Timeline({
   events,
+  sessions,
   now,
   dateKey,
   onCreateAt,
   onEditEvent,
+  onOpenCourse,
 }: {
   events: CalendarEvent[];
+  sessions: CourseSession[];
   now: number;
   dateKey: string;
   onCreateAt: (defaults: EditorDraft) => void;
   onEditEvent: (event: CalendarEvent) => void;
+  onOpenCourse: (session: CourseSession) => void;
 }) {
   const hours = Array.from({ length: 17 }, (_, index) => index + 8);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1508,6 +2023,42 @@ function Timeline({
               <span>现在</span>
             </div>
           ) : null}
+          {sessions.map((session) => {
+            const geometry = blockGeometryFromMinutes(
+              session.startMinute,
+              session.endMinute,
+            );
+            const minutesNow = shanghaiClockMinutes(new Date(now));
+            const isCurrent =
+              session.startMinute <= minutesNow && minutesNow < session.endMinute;
+            return (
+              <button
+                type="button"
+                key={session.slotId}
+                className={`timeline-event timeline-course ${isCurrent ? "is-current" : ""}`}
+                style={
+                  {
+                    "--event-top": geometry.top,
+                    "--event-height": geometry.height,
+                    "--event-color": session.color,
+                  } as CSSProperties
+                }
+                aria-label={`编辑课程 ${session.title}，${session.start} 至 ${session.end}`}
+                onClick={() => onOpenCourse(session)}
+              >
+                <div>
+                  <strong>{session.title}</strong>
+                  <span>
+                    课程
+                    {session.location ? ` · ${session.location}` : ""}
+                  </span>
+                </div>
+                <time>
+                  {session.start}—{session.end}
+                </time>
+              </button>
+            );
+          })}
           {events.map((event) => {
             const geometry = eventGeometry(event);
             const isCurrent =
@@ -1546,6 +2097,698 @@ function Timeline({
       </div>
     </section>
   );
+}
+
+function TimetableView({
+  snapshot,
+  todayKey,
+  onCreateAt,
+  onEditSlot,
+  onCreateSemester,
+  onLoadDemo,
+  onSaveSemester,
+}: {
+  snapshot: Snapshot;
+  todayKey: string;
+  onCreateAt: (weekday: number, period: number) => void;
+  onEditSlot: (slotId: string, courseId: string) => void;
+  onCreateSemester: () => void;
+  onLoadDemo: () => void;
+  onSaveSemester: (semester: Semester, patch: Record<string, unknown>) => void;
+}) {
+  const semester = activeSemesterOf(snapshot);
+  const periods = periodTimesOf(snapshot.settings);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const current = semester ? semesterWeekAt(semester, todayKey) : null;
+  const baseWeek = semester
+    ? Math.min(Math.max(current?.week ?? 1, 1), semester.weekCount)
+    : 1;
+  const week = semester
+    ? Math.min(Math.max(baseWeek + weekOffset, 1), semester.weekCount)
+    : 1;
+  const mondayKey = semester
+    ? addDaysToKey(semester.startDate, (week - 1) * 7)
+    : todayKey;
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const key = addDaysToKey(mondayKey, index);
+    return { key, isToday: key === todayKey, day: Number(key.slice(-2)) };
+  });
+  const semesterCourses = snapshot.courses.filter(
+    (course) => course.semesterId === semester?.id,
+  );
+  const courseById = new Map(semesterCourses.map((course) => [course.id, course]));
+  const slotsByDay = days.map((_, index) =>
+    layoutTimetableDay(
+      snapshot.courseSlots
+        .filter(
+          (slot) =>
+            slot.weekday === index + 1 &&
+            slot.weeks.includes(week) &&
+            courseById.has(slot.courseId),
+        )
+        .map((slot) => ({ ...slot, course: courseById.get(slot.courseId) as Course })),
+    ),
+  );
+
+  if (!semester) {
+    return (
+      <div className="page-stack page-enter">
+        <section className="page-intro page-intro--calendar">
+          <div>
+            <p className="eyebrow">TIMETABLE</p>
+            <h2>先把这一学期立起来</h2>
+            <p>
+              课表按「学期开始日期 + 周次」排布，之后每周自动滚动。先在设置里创建学期，或者先载入一份示例课表看看效果。
+            </p>
+          </div>
+        </section>
+        <section className="panel tt-empty">
+          <p className="eyebrow">NO SEMESTER YET</p>
+          <h3>还没有学期</h3>
+          <p>一个学期只需要两件事：第一周的周一，以及总周数（默认 16 周）。</p>
+          <div className="tt-empty-actions">
+            <button className="button button--primary" type="button" onClick={onCreateSemester}>
+              去设置创建学期
+            </button>
+            <button className="button button--outline" type="button" onClick={onLoadDemo}>
+              载入示例课表
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-stack page-enter">
+      <section className="page-intro page-intro--calendar tt-intro">
+        <div>
+          <p className="eyebrow">TIMETABLE · {semester.name}</p>
+          <h2>
+            第 {week} 周
+            <span className="tt-week-parity">{week % 2 === 1 ? "单周" : "双周"}</span>
+          </h2>
+          <p>
+            {formatShortDate(days[0].key)} — {formatShortDate(days[6].key)} · 共 {semester.weekCount} 周
+            {current && !current.inTerm ? " · 现在不在教学周内" : ""}
+          </p>
+        </div>
+        <div className="intro-actions tt-actions">
+          <button
+            className="button button--outline"
+            type="button"
+            aria-label="上一周"
+            onClick={() => setWeekOffset((value) => value - 1)}
+            disabled={weekOffset + baseWeek <= 1}
+          >
+            ‹
+          </button>
+          <button
+            className="button button--outline"
+            type="button"
+            onClick={() => setWeekOffset(0)}
+          >
+            本周
+          </button>
+          <button
+            className="button button--outline"
+            type="button"
+            aria-label="下一周"
+            onClick={() => setWeekOffset((value) => value + 1)}
+            disabled={weekOffset + baseWeek >= semester.weekCount}
+          >
+            ›
+          </button>
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={() => onCreateAt(isoWeekdayOf(todayKey), 1)}
+          >
+            ＋ 添加课程
+          </button>
+        </div>
+      </section>
+
+      <div className="tt-scroll">
+        <div className="tt-grid" style={{ "--tt-rows": periods.length } as CSSProperties}>
+          <div className="tt-corner" aria-hidden="true">
+            节次
+          </div>
+          {days.map((day, index) => (
+            <div className={`tt-head ${day.isToday ? "is-today" : ""}`} key={day.key}>
+              <strong>周{weekdayLabels[index]}</strong>
+              <small>{day.day}</small>
+            </div>
+          ))}
+          <div className="tt-times">
+            {periods.map((period) => (
+              <div className="tt-time" key={period.index}>
+                <b>{period.index}</b>
+                <span>{period.start}</span>
+              </div>
+            ))}
+          </div>
+          {days.map((day, index) => (
+            <div
+              className={`tt-col ${day.isToday ? "is-today" : ""}`}
+              key={day.key}
+            >
+              {periods.map((period) => (
+                <button
+                  className="tt-cell"
+                  type="button"
+                  key={period.index}
+                  aria-label={`在周${weekdayLabels[index]}第 ${period.index} 节添加课程`}
+                  onClick={() => onCreateAt(index + 1, period.index)}
+                />
+              ))}
+              {slotsByDay[index].map(({ slot, lane, laneCount }) => (
+                <button
+                  className="tt-course"
+                  type="button"
+                  key={slot.id}
+                  style={
+                    {
+                      "--course-color": slot.course.color,
+                      top: `${((slot.startPeriod - 1) / periods.length) * 100}%`,
+                      height: `${((slot.endPeriod - slot.startPeriod + 1) / periods.length) * 100}%`,
+                      left: `${(lane / laneCount) * 100}%`,
+                      width: `${100 / laneCount}%`,
+                    } as CSSProperties
+                  }
+                  aria-label={`编辑课程 ${slot.course.name}，${courseWeekLabel(slot)}`}
+                  onClick={() => onEditSlot(slot.id, slot.courseId)}
+                >
+                  <strong>{slot.course.name}</strong>
+                  {slot.location ? <span>{slot.location}</span> : null}
+                  <small>
+                    {slot.startPeriod === slot.endPeriod
+                      ? `第 ${slot.startPeriod} 节`
+                      : `第 ${slot.startPeriod}–${slot.endPeriod} 节`}
+                  </small>
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <section className="panel tt-course-list" aria-label="本学期课程">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">COURSES</p>
+            <h2>本学期课程</h2>
+          </div>
+          <span>{semesterCourses.length} 门</span>
+        </div>
+        <ul>
+          {semesterCourses.map((course) => {
+            const slots = snapshot.courseSlots.filter((slot) => slot.courseId === course.id);
+            const first = slots[0];
+            return (
+              <li key={course.id}>
+                <button
+                  type="button"
+                  className="tt-course-row"
+                  disabled={!first}
+                  onClick={() => first && onEditSlot(first.id, course.id)}
+                >
+                  <span
+                    className="tt-course-dot"
+                    style={{ background: course.color }}
+                    aria-hidden="true"
+                  />
+                  <strong>{course.name}</strong>
+                  <span className="tt-course-teacher">{course.teacher || "未填教师"}</span>
+                  <span className="tt-course-when">
+                    {slots.length
+                      ? slots
+                          .map(
+                            (slot) =>
+                              `周${weekdayLabels[slot.weekday - 1]} ${slot.startPeriod}${
+                                slot.endPeriod > slot.startPeriod ? `-${slot.endPeriod}` : ""
+                              } 节`,
+                          )
+                          .join("、")
+                      : "没有时间"}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="tt-course-foot">
+          <label className="tt-inline-field">
+            <span>学期开始（周一）</span>
+            <input
+              type="date"
+              value={semester.startDate}
+              onChange={(event) =>
+                onSaveSemester(semester, { startDate: event.target.value })
+              }
+            />
+          </label>
+          <label className="tt-inline-field">
+            <span>总周数</span>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              value={semester.weekCount}
+              onChange={(event) =>
+                onSaveSemester(semester, { weekCount: Number(event.target.value) })
+              }
+            />
+          </label>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const COURSE_COLORS = [
+  "#0d2f5a",
+  "#167f78",
+  "#5267c7",
+  "#2d6b5f",
+  "#9d7d46",
+  "#b64949",
+  "#3449a4",
+  "#a07d3e",
+];
+
+function CourseDialog({
+  draft,
+  setDraft,
+  editing,
+  error,
+  saving,
+  periods,
+  semester,
+  courses,
+  onClose,
+  onSubmit,
+  onDelete,
+}: {
+  draft: EditorDraft;
+  setDraft: (draft: EditorDraft) => void;
+  editing: boolean;
+  error: string;
+  saving: boolean;
+  periods: CoursePeriod[];
+  semester: Semester | null;
+  courses: Course[];
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onDelete?: () => void;
+}) {
+  const titleRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, titleRef, onClose);
+  const startPeriod = Number(draft.startPeriod) || 1;
+  const endPeriod = Math.max(startPeriod, Number(draft.endPeriod) || startPeriod);
+  const weekCount = semester?.weekCount ?? 16;
+  const previewPeriod = periods[startPeriod - 1];
+  const previewEnd = periods[endPeriod - 1];
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target && !saving) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="editor-dialog course-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="course-dialog-title"
+      >
+        <header>
+          <div>
+            <p className="eyebrow">TIMETABLE</p>
+            <h2 id="course-dialog-title">{editing ? "编辑这节课" : "添加一节课"}</h2>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="关闭课程编辑器"
+            onClick={onClose}
+            disabled={saving}
+          >
+            ×
+          </button>
+        </header>
+        <form noValidate onSubmit={onSubmit}>
+          <div className="field-group">
+            <label htmlFor="course-name">课程名称</label>
+            <input
+              id="course-name"
+              ref={titleRef}
+              value={draft.courseName ?? ""}
+              onChange={(event) => setDraft({ ...draft, courseName: event.target.value })}
+              placeholder="例如：高等数学 A"
+              list="course-name-options"
+              aria-invalid={Boolean(error && !draft.courseName?.trim())}
+            />
+            <datalist id="course-name-options">
+              {courses.map((course) => (
+                <option value={course.name} key={course.id} />
+              ))}
+            </datalist>
+            {error ? (
+              <span className="field-error" role="alert">
+                {error}
+              </span>
+            ) : null}
+          </div>
+          <div className="field-row">
+            <div className="field-group">
+              <label htmlFor="course-teacher">教师</label>
+              <input
+                id="course-teacher"
+                value={draft.teacher ?? ""}
+                onChange={(event) => setDraft({ ...draft, teacher: event.target.value })}
+                placeholder="可选"
+              />
+            </div>
+            <div className="field-group">
+              <label htmlFor="course-location">教室</label>
+              <input
+                id="course-location"
+                value={draft.location ?? ""}
+                onChange={(event) => setDraft({ ...draft, location: event.target.value })}
+                placeholder="例如：光华楼西辅楼 305"
+              />
+            </div>
+          </div>
+          <div className="field-row field-row--three">
+            <div className="field-group">
+              <label htmlFor="course-weekday">星期</label>
+              <select
+                id="course-weekday"
+                value={draft.weekday ?? "1"}
+                onChange={(event) => setDraft({ ...draft, weekday: event.target.value })}
+              >
+                {weekdayLabels.map((label, index) => (
+                  <option value={index + 1} key={label}>
+                    周{label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field-group">
+              <label htmlFor="course-start">开始节次</label>
+              <select
+                id="course-start"
+                value={String(startPeriod)}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    startPeriod: event.target.value,
+                    endPeriod: String(
+                      Math.max(Number(event.target.value), endPeriod),
+                    ),
+                  })
+                }
+              >
+                {periods.map((period) => (
+                  <option value={period.index} key={period.index}>
+                    第 {period.index} 节
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field-group">
+              <label htmlFor="course-end">结束节次</label>
+              <select
+                id="course-end"
+                value={String(endPeriod)}
+                onChange={(event) => setDraft({ ...draft, endPeriod: event.target.value })}
+              >
+                {periods
+                  .filter((period) => period.index >= startPeriod)
+                  .map((period) => (
+                    <option value={period.index} key={period.index}>
+                      第 {period.index} 节
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </div>
+          <div className="field-group">
+            <label htmlFor="course-weeks">
+              上课周次
+              <span>
+                留空表示 1–{weekCount} 周；也可以写 1-8、1-16单、2,4,6
+              </span>
+            </label>
+            <input
+              id="course-weeks"
+              value={draft.weeks ?? ""}
+              onChange={(event) => setDraft({ ...draft, weeks: event.target.value })}
+              placeholder={`1-${weekCount}`}
+            />
+          </div>
+          <div className="field-group">
+            <label>颜色</label>
+            <div className="course-color-row">
+              {COURSE_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  className={`course-color-swatch ${
+                    (draft.color ?? "#0d2f5a") === color ? "is-selected" : ""
+                  }`}
+                  style={{ background: color }}
+                  aria-label={`选择颜色 ${color}`}
+                  aria-pressed={(draft.color ?? "#0d2f5a") === color}
+                  onClick={() => setDraft({ ...draft, color })}
+                />
+              ))}
+            </div>
+          </div>
+          <p className="course-dialog-hint">
+            {previewPeriod && previewEnd
+              ? `这节课会出现在课表上：${previewPeriod.start}—${previewEnd.end}`
+              : "这节课还没有时间。"}
+          </p>
+          <footer>
+            {onDelete ? (
+              <button
+                className="button button--outline editor-delete-action"
+                type="button"
+                onClick={onDelete}
+                disabled={saving}
+              >
+                删除
+              </button>
+            ) : null}
+            <button className="button button--outline" type="button" onClick={onClose} disabled={saving}>
+              取消
+            </button>
+            <button className="button button--primary" type="submit" disabled={saving}>
+              {saving ? "正在保存…" : editing ? "保存更改" : "加入课表"}
+            </button>
+          </footer>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ReminderPanel({
+  sessions,
+  deadlines,
+  weekLabel,
+  reminders,
+  onClose,
+  onOpenWeek,
+  onEditTask,
+  onRequestPermission,
+}: {
+  sessions: CourseSession[];
+  deadlines: Task[];
+  weekLabel: string;
+  reminders?: ReminderSettings;
+  onClose: () => void;
+  onOpenWeek: () => void;
+  onEditTask: (task: Task) => void;
+  onRequestPermission: () => void;
+}) {
+  return (
+    <div className="reminder-panel" role="dialog" aria-label="提醒">
+      <header>
+        <div>
+          <p className="eyebrow">REMINDERS</p>
+          <h3>{weekLabel} · 今日</h3>
+        </div>
+        <button className="icon-button" type="button" aria-label="关闭提醒" onClick={onClose}>
+          ×
+        </button>
+      </header>
+      <section>
+        <h4>今日课程</h4>
+        {sessions.length ? (
+          <ul>
+            {sessions.map((session) => (
+              <li key={session.slotId}>
+                <time>{session.start}</time>
+                <strong>{session.title}</strong>
+                <small>{session.location || session.periods}</small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="reminder-empty">今天没有课。</p>
+        )}
+      </section>
+      <section>
+        <h4>未来 7 天 DDL</h4>
+        {deadlines.length ? (
+          <ul>
+            {deadlines.map((task) => (
+              <li key={task.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onEditTask(task);
+                  }}
+                >
+                  <time>{formatShortDate(task.dueDate as string)}</time>
+                  <strong>{task.title}</strong>
+                  <small className={deadlineTone(task.dueDate as string)}>
+                    {deadlineDistanceLabel(task.dueDate as string)}
+                  </small>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="reminder-empty">没有临近截止。</p>
+        )}
+      </section>
+      <footer>
+        <button className="button button--outline" type="button" onClick={onOpenWeek}>
+          打开课表
+        </button>
+        <button
+          className="button button--ghost"
+          type="button"
+          onClick={onRequestPermission}
+          disabled={!reminders?.enabled}
+        >
+          {reminders?.enabled ? "开启系统通知" : "提醒已关闭"}
+        </button>
+      </footer>
+      <p className="reminder-note">
+        提醒在知行台打开时生效；系统通知需要浏览器授权，且只在页面运行时触发。
+      </p>
+    </div>
+  );
+}
+
+const REMINDER_STATE_KEY = "dsh-workflow-reminder-state";
+
+function readReminderState(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(REMINDER_STATE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function writeReminderState(state: Record<string, number>) {
+  try {
+    const entries = Object.entries(state)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 300);
+    window.localStorage.setItem(REMINDER_STATE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    /* localStorage may be unavailable; reminders still show in-page. */
+  }
+}
+function notifyDesktop(title: string, body: string) {
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission !== "granted") return;
+  try {
+    new Notification(title, { body, tag: `${title}:${body}` });
+  } catch {
+    /* Some browsers require a service worker; skip silently. */
+  }
+}
+
+/** In-page digest + DDL reminders, plus a desktop notification when allowed. */
+function useReminderEngine({
+  snapshot,
+  todayKey,
+  todaySessions,
+  deadlines,
+  weekInfo,
+  notify,
+}: {
+  snapshot: Snapshot | null;
+  todayKey: string;
+  todaySessions: CourseSession[];
+  deadlines: Task[];
+  semester: Semester | null;
+  weekInfo: { week: number; inTerm: boolean } | null;
+  notify: (message: string, tone?: Toast["tone"]) => void;
+}) {
+  const now = useCurrentTime();
+  useEffect(() => {
+    const reminders = snapshot?.settings?.reminders;
+    if (!snapshot || !reminders?.enabled) return;
+    const state = readReminderState();
+    let changed = false;
+    const minuteNow = shanghaiClockMinutes(new Date(now));
+    const fire = (key: string, title: string, body: string) => {
+      if (state[key]) return;
+      state[key] = Date.now();
+      changed = true;
+      notify(`${title}：${body}`, "info");
+      notifyDesktop(title, body);
+    };
+    if (reminders.dailyDigest && minuteNow >= clockMinutesOf(reminders.digestTime || "08:00")) {
+      const dueToday = deadlines.filter((task) => task.dueDate === todayKey).length;
+      fire(
+        `digest:${todayKey}`,
+        "今日摘要",
+        `${todaySessions.length} 节课 · ${dueToday} 个今天到期${
+          weekInfo?.inTerm ? ` · 第 ${weekInfo.week} 周` : ""
+        }`,
+      );
+    }
+    for (const task of deadlines) {
+      if (!task.dueDate) continue;
+      const hours = hoursUntilDate(task.dueDate, now);
+      if (hours <= 0) continue;
+      const leads = [...(reminders.leadHours ?? [])].sort((left, right) => right - left);
+      for (const lead of leads) {
+        if (hours > lead) continue;
+        fire(
+          `ddl:${task.id}:${lead}:${task.dueDate}`,
+          "DDL 提醒",
+          `「${task.title}」${hours < 1 ? "不到 1 小时" : `约 ${Math.round(hours)} 小时`}后到期`,
+        );
+      }
+    }
+    if (changed) writeReminderState(state);
+  }, [now, snapshot, todayKey, todaySessions, deadlines, weekInfo, notify]);
+}
+
+function deadlineDistanceLabel(dueDate: string) {
+  const hours = hoursUntilDate(dueDate, Date.now());
+  if (hours <= 0) return "已过期";
+  if (hours < 12) return `剩 ${Math.max(1, Math.round(hours))} 小时`;
+  const days = Math.ceil(hours / 24);
+  return days <= 1 ? "今天截止" : `还有 ${days} 天`;
+}
+function deadlineTone(dueDate: string) {
+  const hours = hoursUntilDate(dueDate, Date.now());
+  return hours < 24 ? "is-urgent" : hours < 72 ? "is-soon" : "is-calm";
 }
 
 function CalendarView({
@@ -2993,22 +4236,64 @@ function ReviewView({ snapshot }: { snapshot: Snapshot }) {
 
 function SettingsView({
   viewer,
+  profile,
+  settings,
+  semester,
+  weekInfo,
   googleStatus,
   setGoogleStatus,
   onRefresh,
   onSync,
   syncing,
   notify,
+  onSaveProfile,
+  onSaveSettings,
+  onSaveSemester,
+  onCreateSemester,
+  onLoadDemo,
+  onReset,
 }: {
   viewer: Viewer;
+  profile: Profile | undefined;
+  settings: Settings | undefined;
+  semester: Semester | null;
+  weekInfo: { week: number; inTerm: boolean } | null;
   googleStatus: GoogleStatus | null;
   setGoogleStatus: (status: GoogleStatus | null) => void;
   onRefresh: () => Promise<void>;
   onSync: () => void;
   syncing: boolean;
   notify: (message: string, tone?: Toast["tone"]) => void;
+  onSaveProfile: (next: { nickname?: string }) => Promise<void>;
+  onSaveSettings: (next: {
+    reminders?: Partial<ReminderSettings>;
+    periodTimes?: CoursePeriod[];
+  }) => Promise<void>;
+  onSaveSemester: (semester: Semester, patch: Record<string, unknown>) => Promise<void>;
+  onCreateSemester: () => Promise<void>;
+  onLoadDemo: () => Promise<void>;
+  onReset: (mode: "empty" | "demo") => Promise<void>;
 }) {
   const [updating, setUpdating] = useState("");
+  const [nickname, setNickname] = useState(profile?.nickname ?? "FDUer");
+  const [digestTime, setDigestTime] = useState(settings?.reminders?.digestTime ?? "08:00");
+  const [semesterName, setSemesterName] = useState(semester?.name ?? "");
+  const [semesterStart, setSemesterStart] = useState(
+    semester?.startDate ?? mondayKeyOf(localDateKey(new Date())),
+  );
+  const [semesterWeeks, setSemesterWeeks] = useState(String(semester?.weekCount ?? 16));
+  useEffect(() => {
+    setNickname(profile?.nickname ?? "FDUer");
+  }, [profile?.nickname]);
+  useEffect(() => {
+    setDigestTime(settings?.reminders?.digestTime ?? "08:00");
+  }, [settings?.reminders?.digestTime]);
+  useEffect(() => {
+    setSemesterName(semester?.name ?? "");
+    setSemesterStart(semester?.startDate ?? mondayKeyOf(localDateKey(new Date())));
+    setSemesterWeeks(String(semester?.weekCount ?? 16));
+  }, [semester?.id, semester?.name, semester?.startDate, semester?.weekCount]);
+  const reminders = settings?.reminders;
   async function toggleCalendar(calendar: GoogleCalendar) {
     setUpdating(calendar.id);
     try {
@@ -3061,7 +4346,230 @@ function SettingsView({
         <div>
           <p className="eyebrow">SETTINGS</p>
           <h2>数据与设置</h2>
-          <p>管理本地数据、Google Calendar（本地版暂不启用）和数据状态。</p>
+          <p>个人身份、学期与课表、提醒，以及本地数据和 Google Calendar（本地版暂不启用）。</p>
+        </div>
+      </section>
+      <section className="panel settings-panel settings-panel--profile">
+        <div className="settings-heading">
+          <div>
+            <span className="settings-icon" aria-hidden="true">
+              像
+            </span>
+            <div>
+              <h3>个人画像</h3>
+              <p>默认是空的，只保留一个 FDUer 身份。</p>
+            </div>
+          </div>
+          <span className="connection-status">{profile?.claims?.length ? "已积累" : "空白"}</span>
+        </div>
+        <div className="settings-inline-form">
+          <label className="settings-inline-field">
+            <span>称呼</span>
+            <input
+              value={nickname}
+              maxLength={40}
+              onChange={(event) => setNickname(event.target.value)}
+              placeholder="FDUer"
+            />
+          </label>
+          <button
+            className="button button--outline"
+            type="button"
+            disabled={!nickname.trim() || nickname === profile?.nickname}
+            onClick={() => onSaveProfile({ nickname: nickname.trim() })}
+          >
+            保存称呼
+          </button>
+        </div>
+        <p className="settings-copy">
+          画像本身还没有开始记录：目前只有「称呼」这一项身份信息。之后的作息、偏好、擅长科目会作为可编辑的声明加在这里，每一条都带来源和时效，可以随时否认。
+        </p>
+      </section>
+      <section className="panel settings-panel settings-panel--semester">
+        <div className="settings-heading">
+          <div>
+            <span className="settings-icon" aria-hidden="true">
+              学
+            </span>
+            <div>
+              <h3>学期与课表</h3>
+              <p>
+                {semester
+                  ? `${semester.name} · 共 ${semester.weekCount} 周${
+                      weekInfo?.inTerm ? ` · 本周第 ${weekInfo.week} 周` : " · 不在教学周"
+                    }`
+                  : "还没有学期，课表无法排布。"}
+              </p>
+            </div>
+          </div>
+          <span className="connection-status">{semester ? "已设置" : "未设置"}</span>
+        </div>
+        {semester ? (
+          <div className="settings-inline-form settings-inline-form--wrap">
+            <label className="settings-inline-field">
+              <span>学期名称</span>
+              <input value={semesterName} onChange={(event) => setSemesterName(event.target.value)} />
+            </label>
+            <label className="settings-inline-field">
+              <span>第 1 周周一</span>
+              <input
+                type="date"
+                value={semesterStart}
+                onChange={(event) => setSemesterStart(event.target.value)}
+              />
+            </label>
+            <label className="settings-inline-field settings-inline-field--narrow">
+              <span>总周数</span>
+              <input
+                type="number"
+                min={1}
+                max={30}
+                value={semesterWeeks}
+                onChange={(event) => setSemesterWeeks(event.target.value)}
+              />
+            </label>
+            <button
+              className="button button--outline"
+              type="button"
+              onClick={() =>
+                onSaveSemester(semester, {
+                  name: semesterName.trim() || semester.name,
+                  startDate: semesterStart,
+                  weekCount: Number(semesterWeeks) || semester.weekCount,
+                })
+              }
+            >
+              保存学期
+            </button>
+          </div>
+        ) : (
+          <div className="settings-actions">
+            <button className="button button--primary" type="button" onClick={onCreateSemester}>
+              创建本学期
+            </button>
+            <button className="button button--outline" type="button" onClick={onLoadDemo}>
+              载入示例课表
+            </button>
+          </div>
+        )}
+        <p className="settings-copy">
+          课表按「第 1 周周一 + 总周数」计算周次；单双周、分段周次写在上课周次里。现在是 {settings?.periodTimes?.length ?? 13} 节制，默认按复旦夏令作息排布。
+        </p>
+      </section>
+      <section className="panel settings-panel settings-panel--reminders">
+        <div className="settings-heading">
+          <div>
+            <span className="settings-icon" aria-hidden="true">
+              铃
+            </span>
+            <div>
+              <h3>提醒</h3>
+              <p>每日摘要与 DDL 提醒；打开知行台时生效。</p>
+            </div>
+          </div>
+          <button
+            className={`switch ${reminders?.enabled ? "is-on" : ""}`}
+            type="button"
+            role="switch"
+            aria-checked={Boolean(reminders?.enabled)}
+            aria-label="启用提醒"
+            onClick={() => onSaveSettings({ reminders: { enabled: !reminders?.enabled } })}
+          >
+            <span />
+          </button>
+        </div>
+        <div className="reminder-settings">
+          <label className="reminder-setting">
+            <input
+              type="checkbox"
+              checked={Boolean(reminders?.dailyDigest)}
+              disabled={!reminders?.enabled}
+              onChange={(event) =>
+                onSaveSettings({ reminders: { dailyDigest: event.target.checked } })
+              }
+            />
+            <span>
+              <strong>每日摘要</strong>
+              <small>当天第一次打开时，汇总课程与到期 DDL。</small>
+            </span>
+          </label>
+          <div className="reminder-setting reminder-setting--time">
+            <span>
+              <strong>摘要时间</strong>
+              <small>早于这个时间不提醒。</small>
+            </span>
+            <input
+              type="time"
+              value={digestTime}
+              disabled={!reminders?.enabled || !reminders?.dailyDigest}
+              onChange={(event) => setDigestTime(event.target.value)}
+              onBlur={() => {
+                if (/^\d{2}:\d{2}$/.test(digestTime) && digestTime !== reminders?.digestTime) {
+                  onSaveSettings({ reminders: { digestTime } });
+                }
+              }}
+            />
+          </div>
+          <div className="reminder-setting">
+            <span>
+              <strong>提前提醒</strong>
+              <small>DDL 进入这个窗口时提醒一次。</small>
+            </span>
+            <div className="reminder-leads">
+              {[24, 2].map((hour) => {
+                const active = (reminders?.leadHours ?? []).includes(hour);
+                return (
+                  <button
+                    key={hour}
+                    type="button"
+                    className={`chip-toggle ${active ? "is-on" : ""}`}
+                    aria-pressed={active}
+                    disabled={!reminders?.enabled}
+                    onClick={() => {
+                      const current = reminders?.leadHours ?? [];
+                      const next = active
+                        ? current.filter((item) => item !== hour)
+                        : [...current, hour].sort((left, right) => right - left);
+                      onSaveSettings({ reminders: { leadHours: next } });
+                    }}
+                  >
+                    {hour} 小时
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="reminder-setting">
+            <span>
+              <strong>系统通知</strong>
+              <small>
+                {typeof Notification === "undefined"
+                  ? "这个浏览器不支持系统通知。"
+                  : Notification.permission === "granted"
+                    ? "已授权，提醒会同时出现在系统通知里。"
+                    : "未授权；申请后即使切到别的窗口也能看到提醒。"}
+              </small>
+            </span>
+            <button
+              className="button button--outline"
+              type="button"
+              disabled={
+                typeof Notification === "undefined" ||
+                Notification.permission === "granted" ||
+                !reminders?.enabled
+              }
+              onClick={async () => {
+                if (typeof Notification === "undefined") return;
+                const permission = await Notification.requestPermission();
+                notify(
+                  permission === "granted" ? "系统通知已开启" : "未开启系统通知",
+                  permission === "granted" ? "success" : "warning",
+                );
+              }}
+            >
+              申请权限
+            </button>
+          </div>
         </div>
       </section>
       <section className="panel settings-panel settings-panel--calendar">
@@ -3169,7 +4677,7 @@ function SettingsView({
             </span>
             <div>
               <h3>本地身份</h3>
-              <p>local@localhost</p>
+              <p>{viewer.displayName} · local@localhost</p>
             </div>
           </div>
           <span className="connection-status is-connected">仅自己</span>
@@ -3191,7 +4699,26 @@ function SettingsView({
           </div>
         </div>
         <p className="settings-copy">
-          任务、项目、学习进度和 Ideas 保存在本机 profile 的 JSON 文件；浏览器只保存显示偏好。
+          课程、任务、项目、学习进度和 Ideas 保存在本机 profile 的 JSON 文件；浏览器只保存显示偏好和提醒记录。
+        </p>
+        <div className="settings-actions">
+          <button
+            className="button button--outline"
+            type="button"
+            onClick={() => onReset("demo")}
+          >
+            恢复示例数据
+          </button>
+          <button
+            className="button button--ghost-danger"
+            type="button"
+            onClick={() => onReset("empty")}
+          >
+            清空为空白工作台
+          </button>
+        </div>
+        <p className="settings-copy settings-copy--warning">
+          清空会覆盖当前 JSON：课程、任务、项目、领域与 Ideas 都会回到空白，只保留一个 FDUer 身份。建议先导出备份。
         </p>
       </section>
     </div>
@@ -4167,3 +5694,144 @@ function weekDays(date: Date) {
     };
   });
 }
+
+/* Timetable ---------------------------------------------------------------- */
+
+const FALLBACK_PERIOD_TIMES: CoursePeriod[] = [
+  ["08:00", "08:45"], ["08:55", "09:40"],
+  ["10:00", "10:45"], ["10:55", "11:40"],
+  ["12:00", "12:45"], ["12:55", "13:40"],
+  ["13:55", "14:40"], ["14:50", "15:35"],
+  ["15:55", "16:40"], ["16:50", "17:35"],
+  ["18:30", "19:15"], ["19:25", "20:10"], ["20:20", "21:05"],
+].map(([start, end], index) => ({ index: index + 1, start, end }));
+
+function periodTimesOf(settings: Settings | undefined) {
+  const rows = settings?.periodTimes ?? [];
+  return rows.length ? rows : FALLBACK_PERIOD_TIMES;
+}
+function activeSemesterOf(snapshot: Snapshot | null): Semester | null {
+  if (!snapshot) return null;
+  const semesters = snapshot.semesters ?? [];
+  if (!semesters.length) return null;
+  return (
+    semesters.find((item) => item.id === snapshot.activeSemesterId) ??
+    semesters[semesters.length - 1]
+  );
+}
+function semesterWeekAt(semester: Semester, dateKey: string) {
+  const start = Date.parse(`${semester.startDate}T00:00:00Z`);
+  const day = Date.parse(`${dateKey}T00:00:00Z`);
+  const week = Math.floor((day - start) / 86_400_000 / 7) + 1;
+  return { week, inTerm: week >= 1 && week <= semester.weekCount };
+}
+function isoWeekdayOf(dateKey: string) {
+  const day = new Date(`${dateKey}T00:00:00Z`).getUTCDay();
+  return day === 0 ? 7 : day;
+}
+function addDaysToKey(dateKey: string, amount: number) {
+  const value = new Date(`${dateKey}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + amount);
+  return value.toISOString().slice(0, 10);
+}
+function mondayKeyOf(dateKey: string) {
+  return addDaysToKey(dateKey, 1 - isoWeekdayOf(dateKey));
+}
+function clockMinutesOf(value: string) {
+  const [hour = "0", minute = "0"] = value.split(":");
+  return Number(hour) * 60 + Number(minute);
+}
+/** Every timetable occurrence on one calendar day, resolved against the semester week. */
+function sessionsForDate(snapshot: Snapshot | null, dateKey: string): CourseSession[] {
+  const semester = activeSemesterOf(snapshot);
+  if (!snapshot || !semester) return [];
+  const { week, inTerm } = semesterWeekAt(semester, dateKey);
+  if (!inTerm) return [];
+  const weekday = isoWeekdayOf(dateKey);
+  const periods = periodTimesOf(snapshot.settings);
+  const courses = new Map(
+    snapshot.courses
+      .filter((course) => course.semesterId === semester.id)
+      .map((course) => [course.id, course]),
+  );
+  return (snapshot.courseSlots ?? [])
+    .filter(
+      (slot) => slot.weekday === weekday && slot.weeks.includes(week) && courses.has(slot.courseId),
+    )
+    .map((slot) => {
+      const course = courses.get(slot.courseId) as Course;
+      const start = periods[slot.startPeriod - 1]?.start ?? "08:00";
+      const end = periods[slot.endPeriod - 1]?.end ?? start;
+      return {
+        slotId: slot.id,
+        courseId: course.id,
+        dateKey,
+        title: course.name,
+        teacher: course.teacher,
+        location: slot.location,
+        color: course.color,
+        start,
+        end,
+        startMinute: clockMinutesOf(start),
+        endMinute: Math.max(clockMinutesOf(start) + 45, clockMinutesOf(end)),
+        periods:
+          slot.startPeriod === slot.endPeriod
+            ? `第 ${slot.startPeriod} 节`
+            : `第 ${slot.startPeriod}–${slot.endPeriod} 节`,
+      } satisfies CourseSession;
+    })
+    .sort((left, right) => left.startMinute - right.startMinute);
+}
+/** Unfinished tasks whose DDL falls inside the next `days` calendar days. */
+function upcomingDeadlines(tasks: Task[], fromKey: string, days: number) {
+  const limit = addDaysToKey(fromKey, days);
+  return tasks
+    .filter(
+      (task) =>
+        task.status !== "done" && task.dueDate && task.dueDate >= fromKey && task.dueDate <= limit,
+    )
+    .sort((left, right) => String(left.dueDate).localeCompare(String(right.dueDate)));
+}
+function hoursUntilDate(dueDate: string, now: number) {
+  const due = Date.parse(`${dueDate}T23:59:00+08:00`);
+  return (due - now) / 3_600_000;
+}
+function blockGeometryFromMinutes(startMinute: number, endMinute: number) {
+  const top = Math.max(0, Math.min(100, ((startMinute - 8 * 60) / (16 * 60)) * 100));
+  const duration = Math.max(20, endMinute - startMinute);
+  return {
+    top: `${top}%`,
+    height: `${Math.max(3.125, Math.min(100 - top, (duration / (16 * 60)) * 100))}%`,
+  };
+}
+/** Lane layout for overlapping blocks inside one weekday column. */
+function layoutTimetableDay(slots: Array<CourseSlot & { course: Course }>) {
+  const laneEnds: number[] = [];
+  const positioned = [...slots]
+    .sort((left, right) => left.startPeriod - right.startPeriod)
+    .map((slot) => {
+      let lane = laneEnds.findIndex((laneEnd) => laneEnd <= slot.startPeriod);
+      if (lane === -1) {
+        lane = laneEnds.length;
+        laneEnds.push(slot.endPeriod + 1);
+      } else {
+        laneEnds[lane] = slot.endPeriod + 1;
+      }
+      return { slot, lane };
+    });
+  const laneCount = Math.max(1, laneEnds.length);
+  return positioned.map((item) => ({ ...item, laneCount }));
+}
+function courseWeekLabel(slot: CourseSlot) {
+  const weeks = [...slot.weeks].sort((left, right) => left - right);
+  if (!weeks.length) return "未设置周次";
+  if (weeks.length === 1) return `第 ${weeks[0]} 周`;
+  const isContiguous = weeks.every(
+    (week, index) => index === 0 || week === weeks[index - 1] + 1,
+  );
+  const parity = weeks.length > 2 && weeks.every((week) => week % 2 === weeks[0] % 2);
+  if (isContiguous) return `第 ${weeks[0]}–${weeks[weeks.length - 1]} 周`;
+  if (parity) return `第 ${weeks[0]}–${weeks[weeks.length - 1]} 周（${weeks[0] % 2 ? "单" : "双"}周）`;
+  return weeks.map((week) => `第 ${week} 周`).join("、");
+}
+

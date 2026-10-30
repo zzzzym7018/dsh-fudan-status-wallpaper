@@ -24,8 +24,22 @@ const ENTITY_MAP = {
   project: 'projects', task: 'tasks', domain: 'domains',
   learningLog: 'learningLogs', knowledgeNote: 'knowledgeNotes',
   idea: 'ideas', event: 'events',
+  semester: 'semesters', course: 'courses', courseSlot: 'courseSlots',
 };
 const ENTITIES = new Set(Object.values(ENTITY_MAP));
+/** Current store layout. Older files are upgraded in place by migrateStore(). */
+const STORE_VERSION = 2;
+/** Highest period index a timetable slot may use. */
+const MAX_PERIOD = 13;
+/** Default weekly 13-period grid (Beijing time). Editable per profile. */
+const DEFAULT_PERIOD_TIMES = [
+  ['08:00', '08:45'], ['08:55', '09:40'],
+  ['10:00', '10:45'], ['10:55', '11:40'],
+  ['12:00', '12:45'], ['12:55', '13:40'],
+  ['13:55', '14:40'], ['14:50', '15:35'],
+  ['15:55', '16:40'], ['16:50', '17:35'],
+  ['18:30', '19:15'], ['19:25', '20:10'], ['20:20', '21:05'],
+].map(([start, end], index) => ({ index: index + 1, start, end }));
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -48,8 +62,8 @@ const DATA_FILE = path.join(DATA_DIR, 'workspace.json');
 function nowIso() { return new Date().toISOString(); }
 function todayKey() { return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10); }
 function addDays(date, amount) {
-  const value = new Date(`${date}T00:00:00+08:00`);
-  value.setDate(value.getDate() + amount);
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + amount);
   return value.toISOString().slice(0, 10);
 }
 function withLocalTime(date, time) {
@@ -61,19 +75,138 @@ function clamp(value, min, max, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
 }
+function defaultReminders() {
+  return { enabled: true, dailyDigest: true, digestTime: '08:00', leadHours: [24, 2] };
+}
+function defaultSettings() {
+  return { periodTimes: DEFAULT_PERIOD_TIMES.map((item) => ({ ...item })), reminders: defaultReminders() };
+}
+function emptyProfile() {
+  return { nickname: 'FDUer', school: '复旦大学', claims: [] };
+}
 function emptyStore() {
   return {
-    version: 1,
+    version: STORE_VERSION,
+    profile: emptyProfile(),
+    settings: defaultSettings(),
+    semesters: [], courses: [], courseSlots: [],
     projects: [], tasks: [], domains: [], learningLogs: [],
     knowledgeNotes: [], ideas: [], events: [],
   };
+}
+
+/** Monday of the ISO week that contains `date` (YYYY-MM-DD, Beijing time). */
+function mondayOf(date) {
+  const value = new Date(`${date}T00:00:00Z`);
+  const weekday = value.getUTCDay() || 7;
+  value.setUTCDate(value.getUTCDate() - weekday + 1);
+  return value.toISOString().slice(0, 10);
+}
+function normalizeWeeks(value, weekCount) {
+  const total = clamp(weekCount, 1, 30, 16);
+  const all = Array.from({ length: total }, (_, index) => index + 1);
+  if (Array.isArray(value)) {
+    const weeks = [...new Set(value.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item >= 1 && item <= total))];
+    return weeks.length ? weeks.sort((a, b) => a - b) : all;
+  }
+  const raw = text(value);
+  if (!raw) return all;
+  const picked = new Set();
+  const parity = raw.includes('单') ? 1 : raw.includes('双') ? 0 : null;
+  for (const chunk of raw.split(/[,，;；\s]+/)) {
+    const clean = chunk.replace(/[单双]/g, '');
+    if (!clean) continue;
+    const range = clean.match(/^(\d{1,2})\s*[-–~]\s*(\d{1,2})$/);
+    if (range) {
+      const from = Number(range[1]);
+      const to = Number(range[2]);
+      for (let week = Math.min(from, to); week <= Math.max(from, to); week += 1) {
+        if (week >= 1 && week <= total) picked.add(week);
+      }
+      continue;
+    }
+    const single = clean.match(/^(\d{1,2})$/);
+    if (single) {
+      const week = Number(single[1]);
+      if (week >= 1 && week <= total) picked.add(week);
+    }
+  }
+  const weeks = [...picked].sort((a, b) => a - b);
+  const filtered = parity === null ? weeks : weeks.filter((week) => week % 2 === parity);
+  return filtered.length ? filtered : all;
+}
+function activeSemesterId(store) {
+  const semesters = store.semesters.filter((item) => !item.archivedAt);
+  if (!semesters.length) return null;
+  const marked = semesters.find((item) => item.isActive);
+  if (marked) return marked.id;
+  return [...semesters].sort((a, b) => String(b.startDate).localeCompare(String(a.startDate)))[0].id;
+}
+/** Fill in fields a pre-v2 workspace file does not have yet. */
+function migrateStore(store) {
+  let changed = false;
+  if (!store.profile || typeof store.profile !== 'object') { store.profile = emptyProfile(); changed = true; }
+  else if (typeof store.profile.nickname !== 'string' || !store.profile.nickname.trim()) { store.profile.nickname = 'FDUer'; changed = true; }
+  if (!Array.isArray(store.profile.claims)) { store.profile.claims = []; changed = true; }
+  if (!store.settings || typeof store.settings !== 'object') { store.settings = defaultSettings(); changed = true; }
+  else {
+    if (!Array.isArray(store.settings.periodTimes) || !store.settings.periodTimes.length) { store.settings.periodTimes = defaultSettings().periodTimes; changed = true; }
+    if (!store.settings.reminders || typeof store.settings.reminders !== 'object') { store.settings.reminders = defaultReminders(); changed = true; }
+  }
+  for (const key of ['semesters', 'courses', 'courseSlots']) {
+    if (!Array.isArray(store[key])) { store[key] = []; changed = true; }
+  }
+  if (Number(store.version) !== STORE_VERSION) { store.version = STORE_VERSION; changed = true; }
+  return changed;
+}
+
+function demoCourses() {
+  const courses = [
+    ['高等数学 A', '王启明', '#0d2f5a', [['一', 1, 2, '光华楼西辅楼 305'], ['三', 3, 4, '光华楼西辅楼 305']]],
+    ['大学英语 III', '周敏', '#9d7d46', [['一', 5, 6, '文科楼 506']]],
+    ['数据结构', '李哲', '#167f78', [['二', 3, 4, '第二教学楼 2101'], ['四', 3, 4, '第二教学楼 2101']]],
+    ['体育（羽毛球）', '赵伟', '#2d6b5f', [['二', 7, 8, '正大体育馆']]],
+    ['概率论与数理统计', '刘一诺', '#5267c7', [['五', 1, 2, '光华楼东辅楼 202']]],
+    ['计算机系统导论', '孙可', '#3449a4', [['四', 5, 6, '第三教学楼 3308']]],
+    ['大学物理实验', '陈立', '#b64949', [['三', 7, 8, '物理楼 实验中心 B203']]],
+    ['专业前沿讲座', '院系安排', '#a07d3e', [['五', 5, 6, '江湾校区 报告厅']]],
+  ];
+  const weekdayOf = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7 };
+  const now = nowIso();
+  const semesterId = 'semester-demo';
+  const rows = { semesters: [], courses: [], courseSlots: [] };
+  rows.semesters.push({
+    id: semesterId, name: '2026—2027 学年 秋季学期',
+    startDate: addDays(mondayOf(todayKey()), -9 * 7), weekCount: 16,
+    isActive: true, note: '示例学期：当前为第 10 周。',
+    archivedAt: null, createdAt: now, updatedAt: now,
+  });
+  courses.forEach(([name, teacher, color, slots], courseIndex) => {
+    const courseId = `course-demo-${courseIndex + 1}`;
+    rows.courses.push({
+      id: courseId, semesterId, name, teacher, code: '', credits: 0, color, note: '',
+      archivedAt: null, createdAt: now, updatedAt: now,
+    });
+    slots.forEach(([weekday, startPeriod, endPeriod, location], slotIndex) => {
+      rows.courseSlots.push({
+        id: `slot-demo-${courseIndex + 1}-${slotIndex + 1}`,
+        courseId, weekday: weekdayOf[weekday] ?? 1, startPeriod, endPeriod,
+        weeks: Array.from({ length: name === '大学物理实验' ? 14 : 16 }, (_, index) => index + (name === '大学物理实验' ? 3 : 1)),
+        location, note: '', archivedAt: null, createdAt: now, updatedAt: now,
+      });
+    });
+  });
+  return rows;
 }
 
 function seedStore() {
   const now = nowIso();
   const today = todayKey();
   return {
-    version: 1,
+    version: STORE_VERSION,
+    profile: emptyProfile(),
+    settings: defaultSettings(),
+    ...demoCourses(),
     projects: [
       {
         id: 'project-personal-web', title: '个人助手网站',
@@ -178,9 +311,11 @@ function readStore() {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') throw new Error('bad workspace');
+    const migrated = migrateStore(parsed);
     for (const key of ENTITIES) {
       if (!Array.isArray(parsed[key])) throw new Error(`bad workspace.${key}`);
     }
+    if (migrated) saveStore(parsed);
     return parsed;
   } catch (error) {
     if (error && error.code === 'ENOENT') {
@@ -202,7 +337,24 @@ function saveStore(store) {
 function snapshot(store) {
   const active = (row) => !row.archivedAt;
   const byCreated = (a, b) => String(a.createdAt).localeCompare(String(b.createdAt));
+  const courses = store.courses.filter(active).sort(byCreated);
+  const courseIds = new Set(courses.map((course) => course.id));
   return {
+    profile: {
+      nickname: text(store.profile?.nickname) || 'FDUer',
+      school: text(store.profile?.school) || '复旦大学',
+      claims: Array.isArray(store.profile?.claims) ? store.profile.claims : [],
+    },
+    settings: {
+      periodTimes: store.settings.periodTimes,
+      reminders: store.settings.reminders,
+    },
+    semesters: store.semesters.filter(active).sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))),
+    activeSemesterId: activeSemesterId(store),
+    courses,
+    courseSlots: store.courseSlots
+      .filter((slot) => active(slot) && courseIds.has(slot.courseId))
+      .sort((a, b) => (a.weekday - b.weekday) || (a.startPeriod - b.startPeriod)),
     projects: store.projects.filter(active).sort(byCreated),
     tasks: store.tasks.filter(active).sort(byCreated),
     domains: store.domains.filter(active).sort(byCreated),
@@ -219,7 +371,11 @@ function snapshot(store) {
     events: store.events
       .filter(active)
       .sort((a, b) => String(a.startAt).localeCompare(String(b.startAt))),
-    viewer: { displayName: '本地使用者', email: 'local@localhost', isPreview: true },
+    viewer: {
+      displayName: text(store.profile?.nickname) || 'FDUer',
+      email: 'local@localhost',
+      isPreview: true,
+    },
   };
 }
 
@@ -345,12 +501,101 @@ function isoRequired(value, message) {
   if (!normalized) throw new HttpError(400, message);
   return normalized;
 }
+/** A plain YYYY-MM-DD calendar day (no time, no timezone shift). */
+function dateFormat(value, message) {
+  const raw = text(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw new HttpError(400, message);
+  const date = new Date(`${raw}T00:00:00+08:00`);
+  if (!Number.isFinite(date.getTime())) throw new HttpError(400, message);
+  return raw;
+}
+function semesterWeekCount(store, semesterId) {
+  const semester = store.semesters.find((item) => item.id === semesterId);
+  return semester ? clamp(semester.weekCount, 1, 30, 16) : 16;
+}
+/**
+ * A timetable entry carries the course name inline, so adding a slot for an
+ * existing course reuses its row (and colour) instead of duplicating it.
+ */
+function resolveCourse(store, semesterId, data) {
+  const courseId = nullableText(data.courseId);
+  if (courseId) {
+    const existing = store.courses.find((item) => item.id === courseId && !item.archivedAt);
+    if (!existing) throw new HttpError(404, '这门课程已经不存在。');
+    if (data.teacher !== undefined) existing.teacher = text(data.teacher);
+    return existing;
+  }
+  const name = requiredTitle(data.courseName ?? data.name, '请填写课程名称。');
+  let course = store.courses.find(
+    (item) => item.semesterId === semesterId && !item.archivedAt && item.name === name,
+  );
+  if (!course) {
+    const now = nowIso();
+    course = {
+      id: crypto.randomUUID(), semesterId, name,
+      teacher: text(data.teacher), code: '', credits: 0,
+      color: text(data.color) || '#0d2f5a', note: '',
+      archivedAt: null, createdAt: now, updatedAt: now,
+    };
+    store.courses.push(course);
+  } else if (data.color) {
+    course.color = text(data.color) || course.color;
+  }
+  return course;
+}
+/** A course with no remaining slots is invisible in the timetable; drop it. */
+function pruneCourse(store, courseId) {
+  if (!courseId) return;
+  if (store.courseSlots.some((slot) => slot.courseId === courseId && !slot.archivedAt)) return;
+  store.courses = store.courses.filter((course) => course.id !== courseId);
+}
 
 function createEntity(entity, data, store) {
   const now = nowIso();
   const id = crypto.randomUUID();
   const base = { id, archivedAt: null, createdAt: now, updatedAt: now };
   switch (entity) {
+    case 'semesters': {
+      const row = {
+        ...base,
+        name: requiredTitle(data.name ?? data.title, '请填写学期名称。'),
+        startDate: mondayOf(dateFormat(data.startDate, '学期开始日期无效。')),
+        weekCount: clamp(data.weekCount, 1, 30, 16),
+        isActive: data.isActive === undefined ? store.semesters.length === 0 : Boolean(data.isActive),
+        note: text(data.note),
+      };
+      if (row.isActive) for (const item of store.semesters) item.isActive = false;
+      store.semesters.push(row); return row;
+    }
+    case 'courses': {
+      const semesterId = nullableText(data.semesterId) || activeSemesterId(store);
+      if (!semesterId) throw new HttpError(400, '请先创建一个学期。');
+      const row = {
+        ...base, semesterId,
+        name: requiredTitle(data.name ?? data.title, '请填写课程名称。'),
+        teacher: text(data.teacher), code: text(data.code),
+        credits: clamp(data.credits, 0, 20, 0), color: text(data.color) || '#0d2f5a',
+        note: text(data.note),
+      };
+      store.courses.push(row); return row;
+    }
+    case 'courseSlots': {
+      const semesterId = nullableText(data.semesterId) || activeSemesterId(store);
+      if (!semesterId) throw new HttpError(400, '请先创建一个学期。');
+      const course = resolveCourse(store, semesterId, data);
+      const startPeriod = clamp(data.startPeriod, 1, MAX_PERIOD, 1);
+      const row = {
+        ...base, courseId: course.id,
+        weekday: clamp(data.weekday, 1, 7, 1),
+        startPeriod,
+        endPeriod: Math.max(startPeriod, clamp(data.endPeriod, 1, MAX_PERIOD, startPeriod)),
+        weeks: normalizeWeeks(data.weeks, semesterWeekCount(store, semesterId)),
+        location: text(data.location), note: text(data.note),
+      };
+      if (data.location !== undefined) { course.updatedAt = now; }
+      store.courseSlots.push(row);
+      return { ...row, course };
+    }
     case 'projects': {
       const row = {
         ...base,
@@ -438,6 +683,38 @@ function updateEntity(entity, id, data, store) {
   const now = nowIso();
   const has = (key) => Object.prototype.hasOwnProperty.call(data, key);
   switch (entity) {
+    case 'semesters':
+      if (has('name') || has('title')) row.name = requiredTitle(data.name ?? data.title, '请填写学期名称。');
+      if (has('startDate')) row.startDate = mondayOf(dateFormat(data.startDate, '学期开始日期无效。'));
+      if (has('weekCount')) row.weekCount = clamp(data.weekCount, 1, 30, row.weekCount);
+      if (has('note')) row.note = text(data.note);
+      if (has('isActive')) {
+        row.isActive = Boolean(data.isActive);
+        if (row.isActive) for (const item of store.semesters) if (item.id !== id) item.isActive = false;
+      }
+      break;
+    case 'courses':
+      if (has('name') || has('title')) row.name = requiredTitle(data.name ?? data.title, '请填写课程名称。');
+      if (has('teacher')) row.teacher = text(data.teacher);
+      if (has('code')) row.code = text(data.code);
+      if (has('credits')) row.credits = clamp(data.credits, 0, 20, row.credits);
+      if (has('color')) row.color = text(data.color) || row.color;
+      if (has('note')) row.note = text(data.note);
+      break;
+    case 'courseSlots': {
+      const semesterId = store.courses.find((item) => item.id === row.courseId)?.semesterId
+        ?? activeSemesterId(store);
+      if (has('courseId') || has('courseName') || has('name')) {
+        row.courseId = resolveCourse(store, semesterId, data).id;
+      }
+      if (has('weekday')) row.weekday = clamp(data.weekday, 1, 7, row.weekday);
+      if (has('startPeriod')) row.startPeriod = clamp(data.startPeriod, 1, MAX_PERIOD, row.startPeriod);
+      if (has('endPeriod')) row.endPeriod = Math.max(row.startPeriod, clamp(data.endPeriod, 1, MAX_PERIOD, row.endPeriod));
+      if (has('weeks')) row.weeks = normalizeWeeks(data.weeks, semesterWeekCount(store, semesterId));
+      if (has('location')) row.location = text(data.location);
+      if (has('note')) row.note = text(data.note);
+      break;
+    }
     case 'projects':
       if (has('title')) row.title = requiredTitle(data.title, '请填写项目名称。');
       if (has('description')) row.description = text(data.description);
@@ -514,9 +791,26 @@ function archiveEntity(entity, id, store, action) {
     row.archivedAt = nowIso();
     row.updatedAt = row.archivedAt;
     if (entity === 'events') row.syncStatus = 'archive-pending';
+    if (entity === 'courseSlots') pruneCourse(store, row.courseId);
     return { archived: true };
   }
   switch (entity) {
+    case 'semesters':
+      store.courseSlots = store.courseSlots.filter((item) => {
+        const course = store.courses.find((entry) => entry.id === item.courseId);
+        return course ? course.semesterId !== id : false;
+      });
+      store.courses = store.courses.filter((item) => item.semesterId !== id);
+      store.semesters = store.semesters.filter((item) => item.id !== id);
+      break;
+    case 'courses':
+      store.courseSlots = store.courseSlots.filter((item) => item.courseId !== id);
+      store.courses = store.courses.filter((item) => item.id !== id);
+      break;
+    case 'courseSlots':
+      store.courseSlots = store.courseSlots.filter((item) => item.id !== id);
+      pruneCourse(store, row.courseId);
+      break;
     case 'projects':
       store.tasks = store.tasks.filter((item) => item.projectId !== id);
       for (const item of store.ideas) if (item.projectId === id) item.projectId = null;
@@ -574,6 +868,63 @@ async function handleWorkspace(req, res, pathname) {
       return sendJson(res, 200, result);
     }
     return sendJson(res, 405, { error: '不支持的方法。' });
+  }
+
+  if (pathname === `${PREFIX}/profile` && req.method === 'PATCH') {
+    const body = await readBody(req);
+    const store = readStore();
+    const nickname = text(body.nickname);
+    if (nickname) store.profile.nickname = nickname.slice(0, 40);
+    if (typeof body.school === 'string' && text(body.school)) store.profile.school = text(body.school).slice(0, 60);
+    if (Array.isArray(body.claims)) store.profile.claims = body.claims.slice(0, 200);
+    saveStore(store);
+    return sendJson(res, 200, { profile: snapshot(store).profile });
+  }
+  if (pathname === `${PREFIX}/settings` && req.method === 'PATCH') {
+    const body = await readBody(req);
+    const store = readStore();
+    const current = store.settings.reminders;
+    if (body.reminders && typeof body.reminders === 'object') {
+      const next = body.reminders;
+      store.settings.reminders = {
+        enabled: next.enabled === undefined ? current.enabled : Boolean(next.enabled),
+        dailyDigest: next.dailyDigest === undefined ? current.dailyDigest : Boolean(next.dailyDigest),
+        digestTime: /^\d{2}:\d{2}$/.test(String(next.digestTime ?? '')) ? next.digestTime : current.digestTime,
+        leadHours: Array.isArray(next.leadHours)
+          ? [...new Set(next.leadHours.map(Number).filter((hour) => Number.isFinite(hour) && hour > 0 && hour <= 168))].slice(0, 3)
+          : current.leadHours,
+      };
+    }
+    if (Array.isArray(body.periodTimes) && body.periodTimes.length) {
+      const rows = body.periodTimes
+        .map((item, index) => ({
+          index: index + 1,
+          start: /^\d{2}:\d{2}$/.test(String(item?.start ?? '')) ? item.start : '',
+          end: /^\d{2}:\d{2}$/.test(String(item?.end ?? '')) ? item.end : '',
+        }))
+        .filter((item) => item.start && item.end);
+      if (rows.length) store.settings.periodTimes = rows;
+    }
+    saveStore(store);
+    return sendJson(res, 200, { settings: snapshot(store).settings });
+  }
+  if (pathname === `${PREFIX}/timetable/demo` && req.method === 'POST') {
+    const store = readStore();
+    if (store.semesters.some((item) => !item.archivedAt)) {
+      return sendJson(res, 409, { error: '已经有学期了，示例课表不会覆盖现有数据。' });
+    }
+    const demo = demoCourses();
+    store.semesters.push(...demo.semesters);
+    store.courses.push(...demo.courses);
+    store.courseSlots.push(...demo.courseSlots);
+    saveStore(store);
+    return sendJson(res, 201, { semesters: demo.semesters.length, courses: demo.courses.length });
+  }
+  if (pathname === `${PREFIX}/store/reset` && req.method === 'POST') {
+    const body = await readBody(req);
+    const mode = body.mode === 'demo' ? 'demo' : 'empty';
+    saveStore(mode === 'demo' ? seedStore() : emptyStore());
+    return sendJson(res, 200, { ok: true, mode });
   }
 
   if (pathname === `${PREFIX}/google/status` && (req.method === 'GET' || req.method === 'HEAD')) {
