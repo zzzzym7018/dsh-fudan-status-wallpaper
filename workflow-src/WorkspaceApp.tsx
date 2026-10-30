@@ -223,6 +223,7 @@ type IcsPlan = {
   unmatched: number;
   loose: number;
   periodUpdates: CoursePeriod[];
+  periodTimes: CoursePeriod[];
 };
 type GoogleCalendar = {
   id: string;
@@ -1756,7 +1757,7 @@ function TodayView({
     ? {
         title: currentSession.title,
         time: `${currentSession.start}—${currentSession.end}`,
-        detail: `课程 · ${currentSession.periods}${currentSession.location ? ` · ${currentSession.location}` : ""}`,
+        detail: `课程 · ${currentSession.location || "未填教室"}`,
         kind: "course" as const,
       }
     : currentEvent
@@ -1776,8 +1777,8 @@ function TodayView({
         : null;
   const weekLabel = semester
     ? weekInfo?.inTerm
-      ? `第 ${weekInfo.week} 周 / 共 ${semester.weekCount} 周`
-      : "不在教学周内"
+      ? `第 ${weekInfo.week} 周`
+      : "假期"
     : "还没有学期";
   return (
     <div className="today-page page-enter">
@@ -1863,8 +1864,7 @@ function TodayView({
                   </span>
                   <strong>{session.title}</strong>
                   <span className="today-course-meta">
-                    {session.periods}
-                    {session.location ? ` · ${session.location}` : ""}
+                    {session.location || "未填教室"}
                   </span>
                 </button>
               ))}
@@ -2139,6 +2139,64 @@ function Timeline({
   const hours = Array.from({ length: 17 }, (_, index) => index + 8);
   const scrollRef = useRef<HTMLDivElement>(null);
   const currentPosition = nowPosition(now);
+  const minuteOf = (value: string) => shanghaiClockMinutes(new Date(value));
+  const blocks = [
+    ...sessions.map((session) => ({
+      key: `course-${session.slotId}`,
+      kind: "course" as const,
+      title: session.title,
+      meta: session.location || "课程",
+      startMinute: session.startMinute,
+      endMinute: session.endMinute,
+      color: session.color,
+      time: `${session.start}—${session.end}`,
+      aria: `编辑课程 ${session.title}，${session.start} 至 ${session.end}`,
+      open: () => onOpenCourse(session),
+    })),
+    ...events.map((event) => ({
+      key: `event-${event.id}`,
+      kind: "event" as const,
+      title: event.title,
+      meta: event.source === "google" ? "Google Calendar" : "站内日程",
+      startMinute: minuteOf(event.startAt),
+      endMinute: Math.max(minuteOf(event.startAt) + 15, minuteOf(event.endAt)),
+      color: event.color,
+      time: `${formatTime(event.startAt)}—${formatTime(event.endAt)}`,
+      aria: `编辑日程 ${event.title}，${formatTime(event.startAt)} 至 ${formatTime(event.endAt)}`,
+      open: () => onEditEvent(event),
+    })),
+  ].sort((left, right) => left.startMinute - right.startMinute);
+  // Lane layout per overlapping cluster, so a lone block keeps the full width.
+  const laidOut: Array<{
+    block: (typeof blocks)[number];
+    lane: number;
+    laneCount: number;
+  }> = [];
+  let cluster: typeof blocks = [];
+  let clusterEnd = Number.NEGATIVE_INFINITY;
+  const flushCluster = () => {
+    const laneEnds: number[] = [];
+    const placed = cluster.map((block) => {
+      let lane = laneEnds.findIndex((end) => end <= block.startMinute);
+      if (lane === -1) {
+        lane = laneEnds.length;
+        laneEnds.push(block.endMinute);
+      } else {
+        laneEnds[lane] = block.endMinute;
+      }
+      return { block, lane };
+    });
+    const laneCount = Math.max(1, laneEnds.length);
+    for (const item of placed) laidOut.push({ ...item, laneCount });
+    cluster = [];
+  };
+  for (const block of blocks) {
+    if (cluster.length && block.startMinute >= clusterEnd) flushCluster();
+    cluster.push(block);
+    clusterEnd = Math.max(clusterEnd, block.endMinute);
+    if (cluster.length === 1) clusterEnd = block.endMinute;
+  }
+  if (cluster.length) flushCluster();
 
   useEffect(() => {
     const scrollArea = scrollRef.current;
@@ -2215,76 +2273,40 @@ function Timeline({
               <span>现在</span>
             </div>
           ) : null}
-          {sessions.map((session) => {
-            const geometry = blockGeometryFromMinutes(
-              session.startMinute,
-              session.endMinute,
-            );
-            const minutesNow = shanghaiClockMinutes(new Date(now));
-            const isCurrent =
-              session.startMinute <= minutesNow && minutesNow < session.endMinute;
-            return (
-              <button
-                type="button"
-                key={session.slotId}
-                className={`timeline-event timeline-course ${isCurrent ? "is-current" : ""}`}
-                style={
-                  {
-                    "--event-top": geometry.top,
-                    "--event-height": geometry.height,
-                    "--event-color": session.color,
-                  } as CSSProperties
-                }
-                aria-label={`编辑课程 ${session.title}，${session.start} 至 ${session.end}`}
-                onClick={() => onOpenCourse(session)}
-              >
-                <div>
-                  <strong>{session.title}</strong>
-                  <span>
-                    课程
-                    {session.location ? ` · ${session.location}` : ""}
-                  </span>
-                </div>
-                <time>
-                  {session.start}—{session.end}
-                </time>
-              </button>
-            );
-          })}
-          {events.map((event) => {
-            const geometry = eventGeometry(event);
-            const isCurrent =
-              new Date(event.startAt).getTime() <= now &&
-              now < new Date(event.endAt).getTime();
-            return (
-              <button
-                type="button"
-                key={event.id}
-                className={`timeline-event ${isCurrent ? "is-current" : ""}`}
-                style={
-                  {
-                    "--event-top": geometry.top,
-                    "--event-height": geometry.height,
-                    "--event-color": event.color,
-                  } as CSSProperties
-                }
-                aria-label={`编辑日程 ${event.title}，${formatTime(event.startAt)} 至 ${formatTime(event.endAt)}`}
-                onClick={() => onEditEvent(event)}
-              >
-                <div>
-                  <strong>{event.title}</strong>
-                  <span>
-                    {event.source === "google"
-                      ? "Google Calendar"
-                      : "站内日程"}
-                  </span>
-                </div>
-                <time>
-                  {formatTime(event.startAt)}—{formatTime(event.endAt)}
-                </time>
-              </button>
-            );
-          })}
+          <div className="timeline-lanes">
+            {laidOut.map(({ block, lane, laneCount }) => {
+              const geometry = blockGeometryFromMinutes(block.startMinute, block.endMinute);
+              const minutesNow = shanghaiClockMinutes(new Date(now));
+              const isCurrent =
+                block.startMinute <= minutesNow && minutesNow < block.endMinute;
+              return (
+                <button
+                  type="button"
+                  key={block.key}
+                  className={`timeline-event timeline-block timeline-${block.kind} ${
+                    isCurrent ? "is-current" : ""
+                  }`}
+                  style={
+                    {
+                      "--event-top": geometry.top,
+                      "--event-height": geometry.height,
+                      "--event-color": block.color,
+                      "--block-left": `${(lane / laneCount) * 100}%`,
+                      "--block-width": `calc(${100 / laneCount}% - 6px)`,
+                    } as CSSProperties
+                  }
+                  aria-label={block.aria}
+                  onClick={block.open}
+                >
+                  <div>
+                    <strong>{block.title}</strong>
+                    <span>{block.meta}</span>
+                  </div>
+                  <time>{block.time}</time>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
     </section>
@@ -2317,6 +2339,7 @@ function TimetableView({
   const periods = periodTimesOf(snapshot.settings);
   const demoLoaded = semester?.id === "semester-demo";
   const [weekOffset, setWeekOffset] = useState(0);
+  const gridScrollRef = useRef<HTMLDivElement>(null);
   const current = semester ? semesterWeekAt(semester, todayKey) : null;
   const baseWeek = semester
     ? Math.min(Math.max(current?.week ?? 1, 1), semester.weekCount)
@@ -2347,6 +2370,16 @@ function TimetableView({
         .map((slot) => ({ ...slot, course: courseById.get(slot.courseId) as Course })),
     ),
   );
+
+  useEffect(() => {
+    const scroller = gridScrollRef.current;
+    if (!scroller) return;
+    // On a phone the grid is wider than the viewport: open on today.
+    if (scroller.scrollWidth <= scroller.clientWidth) return;
+    const todayColumn = scroller.querySelector<HTMLElement>(".tt-col.is-today");
+    if (!todayColumn) return;
+    scroller.scrollLeft = Math.max(0, todayColumn.offsetLeft - 58);
+  }, [week, todayKey]);
 
   async function pickIcsFile(files: FileList | null) {
     const file = files?.[0];
@@ -2399,7 +2432,8 @@ function TimetableView({
     >
       <strong>拖入 .ics 课表</strong>
       <span>
-        支持旦挞 / 教务系统导出的日历；本地解析，不上传。也可以点这里选文件。
+        支持旦挞 / 教务系统导出的日历；本地解析，不上传。
+        <em className="ics-drop-more">也可以点这里选文件。</em>
       </span>
       <input
         ref={icsInputRef}
@@ -2506,7 +2540,8 @@ function TimetableView({
         </p>
       ) : null}
 
-      <div className="tt-scroll">
+      <div className="tt-frame">
+      <div className="tt-scroll" ref={gridScrollRef}>
         <div className="tt-grid" style={{ "--tt-rows": periods.length } as CSSProperties}>
           <div className="tt-corner" aria-hidden="true">
             节次
@@ -2553,21 +2588,22 @@ function TimetableView({
                       width: `${100 / laneCount}%`,
                     } as CSSProperties
                   }
+                  data-span={slot.endPeriod - slot.startPeriod + 1}
                   aria-label={`编辑课程 ${slot.course.name}，${courseWeekLabel(slot)}`}
                   onClick={() => onEditSlot(slot.id, slot.courseId)}
                 >
                   <strong>{slot.course.name}</strong>
-                  {slot.location ? <span>{slot.location}</span> : null}
-                  <small>
-                    {slot.startPeriod === slot.endPeriod
-                      ? `第 ${slot.startPeriod} 节`
-                      : `第 ${slot.startPeriod}–${slot.endPeriod} 节`}
-                  </small>
+                  {slot.location ? (
+                    <span className="tt-course-room">{slot.location}</span>
+                  ) : null}
                 </button>
               ))}
             </div>
           ))}
         </div>
+      </div>
+        <span className="tt-fade tt-fade--left" aria-hidden="true" />
+        <span className="tt-fade tt-fade--right" aria-hidden="true" />
       </div>
 
       <section className="panel tt-course-list" aria-label="本学期课程">
@@ -2600,13 +2636,12 @@ function TimetableView({
                   <span className="tt-course-when">
                     {slots.length
                       ? slots
-                          .map(
-                            (slot) =>
-                              `周${weekdayLabels[slot.weekday - 1]} ${slot.startPeriod}${
-                                slot.endPeriod > slot.startPeriod ? `-${slot.endPeriod}` : ""
-                              } 节`,
-                          )
-                          .join("、")
+                          .map((slot) => {
+                            const start = periods[slot.startPeriod - 1]?.start ?? "";
+                            const end = periods[slot.endPeriod - 1]?.end ?? "";
+                            return `周${weekdayLabels[slot.weekday - 1]} ${start}–${end}`;
+                          })
+                          .join("  ·  ")
                       : "没有时间"}
                   </span>
                 </button>
@@ -2768,20 +2803,19 @@ function IcsImportDialog({
                 </span>
                 <span className="ics-course-when">
                   {course.slots
-                    .map(
-                      (slot) =>
-                        `周${weekdayLabels[slot.weekday - 1]} ${slot.startPeriod}${
-                          slot.endPeriod > slot.startPeriod ? `-${slot.endPeriod}` : ""
-                        } 节${
-                          slot.weeks.length
-                            ? `（${slot.weeks[0]}${
-                                slot.weeks.length > 1
-                                  ? `–${slot.weeks[slot.weeks.length - 1]}`
-                                  : ""
-                              } 周）`
-                            : ""
-                        }`,
-                    )
+                    .map((slot) => {
+                      const start = plan.periodTimes[slot.startPeriod - 1]?.start ?? "";
+                      const end = plan.periodTimes[slot.endPeriod - 1]?.end ?? "";
+                      return `周${weekdayLabels[slot.weekday - 1]} ${start}–${end}${
+                        slot.weeks.length
+                          ? `（${slot.weeks[0]}${
+                              slot.weeks.length > 1
+                                ? `–${slot.weeks[slot.weeks.length - 1]}`
+                                : ""
+                            } 周）`
+                          : ""
+                      }`;
+                    })
                     .join("；")}
                 </span>
               </label>
@@ -6616,6 +6650,10 @@ function buildIcsPlan(
       periodUpdates.push({ index, start: value.start, end: value.end });
     }
   }
+  const periodTimes = grid.map((period) => {
+    const patch = periodUpdates.find((item) => item.index === period.index);
+    return patch ? { ...period, start: patch.start, end: patch.end } : period;
+  });
   const year = Number(weekOne.slice(0, 4));
   return {
     plan: {
@@ -6628,6 +6666,7 @@ function buildIcsPlan(
       unmatched,
       loose,
       periodUpdates,
+      periodTimes,
     },
     error: null,
   };

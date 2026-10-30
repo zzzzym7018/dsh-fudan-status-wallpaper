@@ -1479,9 +1479,9 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
 }
 .tt-grid {
   display: grid;
-  grid-template-columns: 56px repeat(7, minmax(104px, 1fr));
+  grid-template-columns: 58px repeat(7, minmax(116px, 1fr));
   grid-template-rows: 44px auto;
-  min-width: 800px;
+  min-width: 880px;
 }
 .tt-corner,
 .tt-head {
@@ -1500,7 +1500,7 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
 .tt-times { position: sticky; left: 0; z-index: 4; background: #fffdf8; border-right: 1px solid #eee4d2; }
 .tt-time {
   display: grid;
-  height: 46px;
+  height: 50px;
   align-content: center;
   justify-items: center;
   gap: 1px;
@@ -1510,7 +1510,7 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
 .tt-time span { color: #b0a693; font-family: var(--font-mono); font-size: 8.5px; }
 .tt-col {
   position: relative;
-  height: calc(var(--tt-rows, 13) * 46px);
+  height: calc(var(--tt-rows, 13) * 50px);
   border-right: 1px solid #f4ecdd;
 }
 .tt-col:last-child { border-right: 0; }
@@ -1518,7 +1518,7 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
 .tt-cell {
   display: block;
   width: 100%;
-  height: 46px;
+  height: 50px;
   padding: 0;
   border: 0;
   border-bottom: 1px dashed #f2eadb;
@@ -1533,23 +1533,60 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  align-items: flex-start;
+  gap: 4px;
   margin: 1px;
-  padding: 5px 6px 5px 7px;
+  padding: 7px 8px 8px 8px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--course-color, #0d2f5a), white 62%);
+  border: 1px solid color-mix(in srgb, var(--course-color, #0d2f5a), white 64%);
   border-left: 3px solid var(--course-color, #0d2f5a);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--course-color, #0d2f5a), white 91%);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--course-color, #0d2f5a), white 92%);
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: box-shadow 150ms ease, filter 150ms ease;
+  transition: box-shadow 150ms ease, filter 150ms ease, transform 150ms ease;
 }
-.tt-course:hover { box-shadow: 0 8px 18px rgba(8, 29, 51, 0.14); filter: saturate(1.12); }
-.tt-course strong { overflow: hidden; color: #26394c; font-size: 11.5px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; }
-.tt-course span { overflow: hidden; color: #7c7361; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
-.tt-course small { color: var(--course-color, #0d2f5a); font-family: var(--font-mono); font-size: 8.5px; opacity: 0.82; }
+.tt-course:hover {
+  box-shadow: 0 10px 22px rgba(8, 29, 51, 0.16);
+  filter: saturate(1.1);
+  transform: translateY(-1px);
+}
+.tt-course strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #22303f;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.32;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.tt-course-room {
+  display: block;
+  max-width: 100%;
+  margin-top: -1px;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 5px;
+  color: #34424f;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 1px 2px rgba(8, 29, 51, 0.06);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.tt-course small {
+  overflow: hidden;
+  color: #6f7a86;
+  font-size: 9.5px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .tt-course-list { padding: 16px 18px 18px; }
 .tt-course-list ul { display: grid; gap: 1px; margin: 10px 0 0; padding: 0; list-style: none; }
@@ -1756,3 +1793,142 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
   cursor: pointer;
 }
 .ics-clear-demo input { margin-top: 2px; width: 15px; height: 15px; accent-color: var(--fudan-gold); }
+
+/* ── 课表与手机端打磨（v5.2) ─────────────────────────────────────────────── */
+
+/* Toasts sit above the bottom edge instead of covering the search field. */
+.toast-viewport { top: auto; right: 20px; bottom: 22px; }
+
+/* The .ics bar is a single quiet line on desktop, two on a phone. */
+.ics-drop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 10px 14px;
+}
+.ics-drop strong { font-size: 13.5px; }
+.ics-drop span { font-size: 11px; }
+
+@media (max-width: 760px) {
+  .toast-viewport { right: 12px; left: 12px; bottom: 84px; width: auto; }
+  .workspace-main { padding-bottom: 96px; }
+
+  /* `flex: 1 1 480px` is sized for the desktop row; in the stacked layout it
+     would become a 480px-tall basis. */
+  .page-intro--calendar > div:first-child { flex: 0 0 auto; }
+
+  .tt-intro { flex-direction: column; align-items: stretch; gap: 13px; padding: 15px 15px 15px 18px; }
+  .tt-actions { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 8px; }
+  .tt-actions .button { flex: 1 1 0; min-width: 0; padding: 8px 6px; }
+  .tt-actions .button:last-child { flex: 1 1 100%; }
+}
+
+/* ── 时间轨：课程与日程共用轨道，重叠时分栏 ─────────────────────────────── */
+.timeline-lanes { position: absolute; z-index: 3; inset: 0 8px 0 65px; pointer-events: none; }
+.timeline-lanes > * { pointer-events: auto; }
+.timeline-block {
+  right: auto !important;
+  left: var(--block-left, 0);
+  width: var(--block-width, 100%);
+}
+.timeline-course {
+  border-color: #cfdcef !important;
+  border-left-color: #2f4d7a !important;
+  background: linear-gradient(100deg, #eef4fc, #fbfdff) !important;
+}
+.timeline-course:hover { border-color: #a8c0e0 !important; background: #f4f9ff !important; }
+.timeline-course strong { color: #1f3550 !important; }
+.timeline-course span, .timeline-course time { color: #5d7186 !important; }
+
+@media (max-width: 760px) {
+  .timeline-lanes { inset: 0 4px 0 48px; }
+}
+
+/* Today strip: the room reads as a place, not as caption text. */
+.today-course-meta {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  color: #46545f;
+  background: #f4eee2;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+@media (max-width: 760px) {
+  .search-trigger kbd { display: none; }
+  .search-trigger::before { content: "⌕"; font-size: 19px; line-height: 1; }
+  .search-trigger { width: 42px; min-width: 42px; }
+}
+
+@media (min-width: 981px) {
+  .today-overview { grid-template-columns: 200px minmax(0, 1fr); }
+}
+.today-overview-intro .eyebrow { white-space: nowrap; letter-spacing: 0.1em; }
+
+/* Import preview polish */
+.ics-dialog h2:focus,
+.ics-dialog h2:focus-visible { outline: none; }
+.ics-course-when { color: #8a7350; }
+
+@media (max-width: 760px) {
+  .ics-summary { gap: 8px; }
+  .ics-summary > div { padding: 7px 9px; }
+  .ics-summary strong { font-size: 16px; }
+  .ics-course-list { max-height: min(38vh, 340px); }
+  .ics-course-row { grid-template-columns: 16px 10px minmax(0, 1fr); row-gap: 3px; padding: 7px 6px; }
+  .ics-course-when {
+    display: block;
+    grid-column: 1 / -1;
+    margin-left: 26px;
+    font-size: 10px;
+    line-height: 1.45;
+  }
+}
+
+/* Single-period blocks need a tighter type scale to show name + room. */
+.tt-course[data-span="1"] { gap: 2px; padding: 4px 6px 5px 6px; }
+.tt-course[data-span="1"] strong { font-size: 11.5px; -webkit-line-clamp: 1; }
+.tt-course[data-span="1"] .tt-course-room { padding: 1px 4px; font-size: 9.5px; border-radius: 4px; }
+
+@media (max-width: 760px) {
+  /* The top bar's ＋ already opens the course dialog on a phone. */
+  .tt-actions .button:last-child { display: none; }
+  .tt-actions .button { min-height: 38px; }
+}
+
+.ics-drop-more { font-style: normal; }
+@media (max-width: 760px) {
+  .ics-drop-more { display: none; }
+  .ics-drop { padding: 9px 12px; }
+}
+
+/* Soften the clipped column at the edges of the phone grid. */
+.tt-frame { position: relative; }
+.tt-fade { display: none; }
+@media (max-width: 760px) {
+  .tt-fade {
+    position: absolute;
+    z-index: 6;
+    top: 1px;
+    bottom: 1px;
+    display: block;
+    width: 26px;
+    pointer-events: none;
+  }
+  .tt-fade--left { left: 46px; background: linear-gradient(90deg, #fffdf8 12%, rgba(255, 253, 248, 0)); }
+  .tt-fade--right { right: 1px; background: linear-gradient(270deg, #fffdf8 12%, rgba(255, 253, 248, 0)); }
+}
+
+/* A grid item that wraps a 720px grid must not stretch the page. */
+.page-stack > * { min-width: 0; }
+.tt-frame { position: relative; min-width: 0; }
+.tt-scroll { width: 100%; }
+
+@media (max-width: 760px) {
+  .tt-fade--left { width: 62px; background: linear-gradient(90deg, #fffdf8 46%, rgba(255, 253, 248, 0)); }
+}
