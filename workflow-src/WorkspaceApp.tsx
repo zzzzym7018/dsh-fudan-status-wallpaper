@@ -221,6 +221,7 @@ type IcsPlan = {
   eventCount: number;
   skipped: number;
   unmatched: number;
+  loose: number;
   periodUpdates: CoursePeriod[];
 };
 type GoogleCalendar = {
@@ -332,6 +333,9 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     id: string | null;
     draft: EditorDraft;
   } | null>(null);
+  const [icsPlan, setIcsPlan] = useState<IcsPlan | null>(null);
+  const [icsImporting, setIcsImporting] = useState(false);
+  const [icsClearDemo, setIcsClearDemo] = useState(false);
   const [courseError, setCourseError] = useState("");
   const [savingCourse, setSavingCourse] = useState(false);
   const [reminderOpen, setReminderOpen] = useState(false);
@@ -735,6 +739,11 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     }
   }
 
+  function openIcsPlan(plan: IcsPlan, isDemo: boolean) {
+    setIcsPlan(plan);
+    setIcsClearDemo(isDemo);
+  }
+
   function openCourseEditor(
     defaults: EditorDraft = {},
     slot?: { id: string; courseId: string },
@@ -1039,6 +1048,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     [snapshot, todayKey],
   );
   const semester = activeSemesterOf(snapshot);
+  const demoLoaded = semester?.id === "semester-demo";
   const weekInfo = useMemo(
     () => (semester ? semesterWeekAt(semester, todayKey) : null),
     [semester, todayKey],
@@ -1288,7 +1298,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                   onCreateSemester={() => setActiveView("settings")}
                   onLoadDemo={loadDemoTimetable}
                   onSaveSemester={saveSemester}
-                  onImportIcs={importTimetablePlan}
+                  onIcsReady={openIcsPlan}
                 />
               ) : null}
               {activeView === "calendar" ? (
@@ -1471,6 +1481,39 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
         })}
       </nav>
 
+      {icsPlan ? (
+        <IcsImportDialog
+          plan={icsPlan}
+          semesterStart={icsPlan.weekOne}
+          importing={icsImporting}
+          demoPresent={demoLoaded}
+          clearDemo={icsClearDemo}
+          onToggleClearDemo={() => setIcsClearDemo((value) => !value)}
+          onToggleCourse={(name) =>
+            setIcsPlan((current) =>
+              current
+                ? {
+                    ...current,
+                    courses: current.courses.map((course) =>
+                      course.name === name ? { ...course, selected: !course.selected } : course,
+                    ),
+                  }
+                : current,
+            )
+          }
+          onClose={() => setIcsPlan(null)}
+          onConfirm={async () => {
+            if (!icsPlan) return;
+            const selected = icsPlan.courses.filter((course) => course.selected);
+            setIcsImporting(true);
+            await importTimetablePlan(icsPlan, selected, {
+              clearDemo: icsClearDemo && demoLoaded,
+            });
+            setIcsImporting(false);
+            setIcsPlan(null);
+          }}
+        />
+      ) : null}
       {editor ? (
         <EditorDialog
           entity={editor}
@@ -2256,7 +2299,7 @@ function TimetableView({
   onCreateSemester,
   onLoadDemo,
   onSaveSemester,
-  onImportIcs,
+  onIcsReady,
 }: {
   snapshot: Snapshot;
   todayKey: string;
@@ -2265,17 +2308,10 @@ function TimetableView({
   onCreateSemester: () => void;
   onLoadDemo: () => void;
   onSaveSemester: (semester: Semester, patch: Record<string, unknown>) => void;
-  onImportIcs: (
-    plan: IcsPlan,
-    courses: IcsCoursePlan[],
-    options?: { clearDemo?: boolean },
-  ) => Promise<{ created: number; merged: number; failed: number }>;
+  onIcsReady: (plan: IcsPlan, demoLoaded: boolean) => void;
 }) {
-  const [icsPlan, setIcsPlan] = useState<IcsPlan | null>(null);
   const [icsError, setIcsError] = useState("");
   const [icsDragging, setIcsDragging] = useState(false);
-  const [icsImporting, setIcsImporting] = useState(false);
-  const [icsClearDemo, setIcsClearDemo] = useState(false);
   const icsInputRef = useRef<HTMLInputElement>(null);
   const semester = activeSemesterOf(snapshot);
   const periods = periodTimesOf(snapshot.settings);
@@ -2331,8 +2367,7 @@ function TimetableView({
         setIcsError(error ?? "无法解析这个文件。");
         return;
       }
-      setIcsPlan(plan);
-      setIcsClearDemo(demoLoaded);
+      onIcsReady(plan, demoLoaded);
     } catch {
       setIcsError("读取文件失败，请重试。");
     }
@@ -2379,40 +2414,6 @@ function TimetableView({
     </div>
   );
 
-  const importDialog = icsPlan ? (
-    <IcsImportDialog
-      plan={icsPlan}
-      semesterStart={semester?.startDate ?? icsPlan.weekOne}
-      importing={icsImporting}
-      demoPresent={demoLoaded}
-      clearDemo={icsClearDemo}
-      onToggleClearDemo={() => setIcsClearDemo((value) => !value)}
-      onToggleCourse={(name) =>
-        setIcsPlan((current) =>
-          current
-            ? {
-                ...current,
-                courses: current.courses.map((course) =>
-                  course.name === name ? { ...course, selected: !course.selected } : course,
-                ),
-              }
-            : current,
-        )
-      }
-      onClose={() => setIcsPlan(null)}
-      onConfirm={async () => {
-        if (!icsPlan) return;
-        const selected = icsPlan.courses.filter((course) => course.selected);
-        setIcsImporting(true);
-        await onImportIcs(icsPlan, selected, {
-          clearDemo: icsClearDemo && demoLoaded,
-        });
-        setIcsImporting(false);
-        setIcsPlan(null);
-      }}
-    />
-  ) : null;
-
   if (!semester) {
     return (
       <div className="page-stack page-enter">
@@ -2444,7 +2445,6 @@ function TimetableView({
             </button>
           </div>
         </section>
-        {importDialog}
       </div>
     );
   }
@@ -2639,7 +2639,6 @@ function TimetableView({
           </label>
         </div>
       </section>
-      {importDialog}
     </div>
   );
 }
@@ -2725,11 +2724,13 @@ function IcsImportDialog({
           </div>
         </div>
         <p className="ics-note">
-          按「第 1 周周一 = {formatShortDate(semesterStart)}」换算周次。
+          按「第 1 周周一 = {formatShortDate(semesterStart)}」换算周次
+          {demoPresent && clearDemo ? "，导入后以这个日期重建学期" : ""}。
           {plan.periodUpdates.length
             ? ` 作息表会同步更新 ${plan.periodUpdates.length} 个节次的起止时间。`
             : ""}
-          {plan.unmatched ? ` ${plan.unmatched} 个事件与作息表对不上，已跳过。` : ""}
+          {plan.loose ? ` ${plan.loose} 个时间按相邻节次归位。` : ""}
+          {plan.unmatched ? ` ${plan.unmatched} 个事件无法定位节次，已跳过。` : ""}
           {plan.skipped ? ` ${plan.skipped} 个事件缺少时间或标题，已跳过。` : ""}
         </p>
         {demoPresent ? (
@@ -6360,12 +6361,17 @@ function expandIcsEvent(startMs: number, endMs: number, rrule: string | null) {
   return occurrences;
 }
 /** Map a start/end clock to the 1-based period rows of the current grid. */
-function matchPeriodRange(grid: CoursePeriod[], startMinute: number, endMinute: number) {
+function matchPeriodRange(
+  grid: CoursePeriod[],
+  startMinute: number,
+  endMinute: number,
+  tolerance = 20,
+) {
   let startPeriod: number | null = null;
   let best = Number.POSITIVE_INFINITY;
   for (const period of grid) {
     const diff = Math.abs(clockMinutesOf(period.start) - startMinute);
-    if (diff < best && diff <= 20) {
+    if (diff < best && diff <= tolerance) {
       best = diff;
       startPeriod = period.index;
     }
@@ -6446,13 +6452,49 @@ function buildIcsPlan(
     week: number;
   }> = [];
   const observed = new Map<number, { start: string; end: string; count: number }>();
+  const recordObserved = (index: number, startMinute: number, endMinute: number) => {
+    const entry = observed.get(index) ?? { start: "", end: "", count: 0 };
+    entry.start = hhmmFromMinute(startMinute);
+    entry.end = hhmmFromMinute(endMinute);
+    entry.count += 1;
+    observed.set(index, entry);
+  };
+
+  // Map the file's distinct start times onto period rows once, in clock order.
+  // A stale grid (or an export with times we have never seen) then still lands
+  // on consecutive periods instead of dropping the class, and the observed
+  // times rewrite the grid afterwards.
+  const distinctStarts = new Map<number, number>();
+  for (const occurrence of occurrences) {
+    const startMinute = shanghaiClockMinutes(new Date(occurrence.startMs));
+    const endMinute = shanghaiClockMinutes(new Date(occurrence.endMs));
+    if (!distinctStarts.has(startMinute)) distinctStarts.set(startMinute, endMinute);
+  }
+  const orderedStarts = [...distinctStarts.keys()].sort((left, right) => left - right);
+  const periodByStart = new Map<number, number>();
+  const strictByStart = new Map<number, boolean>();
+  let previousPeriod = 0;
+  let looseStarts = 0;
+  for (const startMinute of orderedStarts) {
+    const endMinute = distinctStarts.get(startMinute) ?? startMinute + 45;
+    const strict = matchPeriodRange(grid, startMinute, endMinute);
+    let period = strict ? strict.startPeriod : previousPeriod + 1;
+    if (!strict && period > grid.length) period = 0;
+    if (!period) continue;
+    if (!strict) looseStarts += 1;
+    periodByStart.set(startMinute, period);
+    strictByStart.set(startMinute, Boolean(strict));
+    previousPeriod = period;
+  }
+
   let unmatched = 0;
+  const loose = looseStarts;
   for (const occurrence of occurrences) {
     const dateKey = localDateKey(new Date(occurrence.startMs));
     const startMinute = shanghaiClockMinutes(new Date(occurrence.startMs));
     const endMinute = shanghaiClockMinutes(new Date(occurrence.endMs));
-    const range = matchPeriodRange(grid, startMinute, endMinute);
-    if (!range) {
+    const period = periodByStart.get(startMinute);
+    if (!period) {
       unmatched += 1;
       continue;
     }
@@ -6464,20 +6506,17 @@ function buildIcsPlan(
       unmatched += 1;
       continue;
     }
+    const range = matchPeriodRange(grid, startMinute, endMinute);
+    const endPeriod = range ? range.endPeriod : period;
     matched.push({
       occurrence,
       dateKey,
       weekday: isoWeekdayOf(dateKey),
-      startPeriod: range.startPeriod,
-      endPeriod: range.endPeriod,
+      startPeriod: period,
+      endPeriod,
       week,
     });
-    const slotKey = range.startPeriod;
-    const entry = observed.get(slotKey) ?? { start: "", end: "", count: 0 };
-    entry.start = hhmmFromMinute(startMinute);
-    entry.end = hhmmFromMinute(endMinute);
-    entry.count += 1;
-    observed.set(slotKey, entry);
+    recordObserved(period, startMinute, endMinute);
   }
   if (!matched.length) {
     return { plan: null, error: "所有时间都和当前作息表对不上，无法定位节次。" };
@@ -6587,6 +6626,7 @@ function buildIcsPlan(
       eventCount: occurrences.length,
       skipped,
       unmatched,
+      loose,
       periodUpdates,
     },
     error: null,
