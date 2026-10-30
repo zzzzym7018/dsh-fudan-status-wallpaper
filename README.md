@@ -1,4 +1,4 @@
-# 复旦 · 状态栏 & 壁纸 / Fudan · Status Bar & Wallpaper
+# 复旦 · 桌面 / Fudan · Desktop
 
 | 校园 | 晨光 | 秋色 |
 | --- | --- | --- |

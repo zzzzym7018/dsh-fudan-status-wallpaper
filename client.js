@@ -33,9 +33,9 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------------
 
     const ZH = {
-      'meta.title': '复旦 · 状态栏 & 壁纸',
+      'meta.title': '复旦 · 桌面',
       'meta.description': '右下角复旦风格额度与天气状态卡、六张校园壁纸，以及完全在本机运行的知行台日程与知识工作台。',
-      'nav.label': '复旦 · 状态栏',
+      'nav.label': '复旦 · 桌面',
       'nav.workflow': '知行台',
       'workflow.title': '知行台 · 本地工作台',
       'workflow.hint': '日程、项目与领域学习；数据只保存在这台电脑。',
@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
       'workflow.restartTitle': '需要重启 DSH',
       'workflow.restartHint': '本地工作台的后端随 DSH 启动。请退出并重新打开 DSH，然后回到这里。',
       'workflow.retry': '重试',
-      'page.title': '复旦 · 状态栏 & 壁纸',
+      'page.title': '复旦 · 桌面',
       'page.subtitle': '右下角状态卡一眼看清余额、峰谷、天气与下次降雨；六张校园壁纸可调透明度、模糊、暗化与适配；侧栏的知行台把日程、项目与知识学习留在本机。',
       'page.kicker': '日月光华 · 旦复旦兮',
       'fudan.english': 'FUDAN · 1905',
@@ -162,9 +162,9 @@ window.__ModuleLoader__.load({
     };
 
     const EN = {
-      'meta.title': 'Fudan · Status Bar & Wallpaper',
+      'meta.title': 'Fudan · Desktop',
       'meta.description': 'A Fudan-inspired quota and weather card, six campus wallpapers, and a fully local 知行台 schedule and knowledge workspace.',
-      'nav.label': 'Fudan · Status',
+      'nav.label': 'Fudan · Desktop',
       'nav.workflow': 'Workspace',
       'workflow.title': 'Workspace · Local',
       'workflow.hint': 'Schedules, projects and learning; saved on this machine only.',
@@ -172,7 +172,7 @@ window.__ModuleLoader__.load({
       'workflow.restartTitle': 'Restart DSH',
       'workflow.restartHint': 'The local workspace backend starts with DSH. Quit and reopen DSH, then return here.',
       'workflow.retry': 'Retry',
-      'page.title': 'Fudan · Status Bar & Wallpaper',
+      'page.title': 'Fudan · Desktop',
       'page.subtitle': 'A bottom-right card for balance, peak/off-peak, campus weather and next rain, six campus wallpapers, and a local 知行台 workspace for schedules, projects and learning.',
       'page.kicker': 'LIGHT OF SUN & MOON · DAY AFTER DAY',
       'fudan.english': 'FUDAN · 1905',

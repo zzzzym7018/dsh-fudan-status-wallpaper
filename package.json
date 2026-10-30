@@ -1,7 +1,7 @@
 {
   "name": "dsh-quota-wallpaper",
-  "version": "4.2.0",
-  "description": "Fudan · Status Bar & Wallpaper: quota, campus weather, six curated wallpapers, and a local 知行台 workspace with a Fudan editorial interface.",
+  "version": "4.3.0",
+  "description": "Fudan · Desktop: quota, campus weather, six curated campus wallpapers, and a fully local 知行台 schedule/knowledge workspace with a Fudan editorial UI.",
   "type": "module",
   "icon": "./icon.svg",
   "exports": {
