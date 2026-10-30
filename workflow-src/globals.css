@@ -1567,18 +1567,13 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
 .tt-course-room {
   display: block;
   max-width: 100%;
-  margin-top: -1px;
-  padding: 2px 6px;
+  margin-top: -2px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.92);
-  border-radius: 5px;
-  color: #34424f;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 1px 2px rgba(8, 29, 51, 0.06);
+  color: #46586b;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  line-height: 1.3;
+  line-height: 1.35;
   word-break: break-word;
 }
 .tt-course small {
@@ -1847,17 +1842,15 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
   .timeline-lanes { inset: 0 4px 0 48px; }
 }
 
-/* Today strip: the room reads as a place, not as caption text. */
+/* Today strip: the room is a quiet second line, not a floating chip. */
 .today-course-meta {
-  display: inline-block;
-  margin-top: 3px;
-  padding: 2px 7px;
-  border-radius: 5px;
-  color: #46545f;
-  background: #f4eee2;
+  display: block;
+  margin-top: 2px;
+  color: #4f6070;
   font-size: 11px;
   font-weight: 600;
-  line-height: 1.4;
+  letter-spacing: 0.01em;
+  line-height: 1.45;
   word-break: break-word;
 }
 
