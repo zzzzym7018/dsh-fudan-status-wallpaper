@@ -1,6 +1,6 @@
 {
   "name": "dsh-quota-wallpaper",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "Fudan · Desktop: quota, campus weather, six curated campus wallpapers, and a fully local 知行台 workspace with a semester timetable, today timeline, DDL reminders and a Fudan editorial UI.",
   "type": "module",
   "icon": "./icon.svg",
@@ -71,6 +71,8 @@
     "wallpaper",
     "fudan",
     "web-ui",
+    "ics",
+    "calendar-import",
     "timetable",
     "courses",
     "semester",

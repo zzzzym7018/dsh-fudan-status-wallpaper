@@ -31,13 +31,20 @@ const ENTITIES = new Set(Object.values(ENTITY_MAP));
 const STORE_VERSION = 2;
 /** Highest period index a timetable slot may use. */
 const MAX_PERIOD = 13;
-/** Default weekly 13-period grid (Beijing time). Editable per profile. */
+/**
+ * Default weekly grid (Beijing time).
+ *
+ * Periods 1–7 match the 2026 autumn timetable exported by 旦挞 (08:00 start,
+ * 11:45–12:30 for the fifth period, lunch, 13:30 resume). Periods 8–13 are a
+ * common layout; an imported .ics rewrites whichever periods it contains, and
+ * the whole grid lives in `settings.periodTimes`.
+ */
 const DEFAULT_PERIOD_TIMES = [
   ['08:00', '08:45'], ['08:55', '09:40'],
-  ['10:00', '10:45'], ['10:55', '11:40'],
-  ['12:00', '12:45'], ['12:55', '13:40'],
-  ['13:55', '14:40'], ['14:50', '15:35'],
-  ['15:55', '16:40'], ['16:50', '17:35'],
+  ['09:55', '10:40'], ['10:50', '11:35'],
+  ['11:45', '12:30'], ['13:30', '14:15'],
+  ['14:25', '15:10'], ['15:20', '16:05'],
+  ['16:15', '17:00'], ['17:10', '17:55'],
   ['18:30', '19:15'], ['19:25', '20:10'], ['20:20', '21:05'],
 ].map(([start, end], index) => ({ index: index + 1, start, end }));
 const MIME = {

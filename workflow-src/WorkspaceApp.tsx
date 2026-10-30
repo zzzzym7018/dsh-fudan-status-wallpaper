@@ -189,6 +189,40 @@ type CourseSession = {
   endMinute: number;
   periods: string;
 };
+
+/** One .ics occurrence (already expanded from RRULE, in Beijing time). */
+type IcsOccurrence = {
+  summary: string;
+  teacher: string;
+  location: string;
+  startMs: number;
+  endMs: number;
+};
+type IcsSlotPlan = {
+  weekday: number;
+  startPeriod: number;
+  endPeriod: number;
+  weeks: number[];
+  location: string;
+};
+type IcsCoursePlan = {
+  name: string;
+  teacher: string;
+  color: string;
+  slots: IcsSlotPlan[];
+  eventCount: number;
+  selected: boolean;
+};
+type IcsPlan = {
+  courses: IcsCoursePlan[];
+  weekOne: string;
+  weekCount: number;
+  semesterName: string;
+  eventCount: number;
+  skipped: number;
+  unmatched: number;
+  periodUpdates: CoursePeriod[];
+};
 type GoogleCalendar = {
   id: string;
   calendarId: string;
@@ -850,6 +884,120 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     }
   }
 
+  async function importTimetablePlan(
+    plan: IcsPlan,
+    courses: IcsCoursePlan[],
+    options: { clearDemo?: boolean } = {},
+  ) {
+    const counts = { created: 0, merged: 0, failed: 0 };
+    let activeSemester = activeSemesterOf(snapshot);
+    if (options.clearDemo && activeSemester?.id === "semester-demo") {
+      const response = await fetch("/api/dsh-workflow/workspace", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entity: "semester", id: activeSemester.id, action: "delete" }),
+      });
+      if (response.ok) activeSemester = null;
+    }
+    let semesterId = activeSemester?.id ?? null;
+    try {
+      if (!semesterId) {
+        const created = await fetch("/api/dsh-workflow/workspace", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            entity: "semester",
+            data: {
+              name: plan.semesterName,
+              startDate: plan.weekOne,
+              weekCount: plan.weekCount,
+              isActive: true,
+            },
+          }),
+        });
+        const payload = (await created.json()) as { item?: { id?: string }; error?: string };
+        if (!created.ok || !payload.item?.id) throw new Error(payload.error || "无法创建学期。");
+        semesterId = payload.item.id;
+      }
+      for (const course of courses) {
+        const existingCourse = (snapshot?.courses ?? []).find(
+          (item) => item.semesterId === semesterId && item.name === course.name,
+        );
+        let courseId = existingCourse?.id ?? null;
+        for (const slot of course.slots) {
+          const existingSlot = courseId
+            ? (snapshot?.courseSlots ?? []).find(
+                (item) =>
+                  item.courseId === courseId &&
+                  item.weekday === slot.weekday &&
+                  item.startPeriod === slot.startPeriod &&
+                  item.endPeriod === slot.endPeriod,
+              )
+            : undefined;
+          if (existingSlot) {
+            const weeks = [...new Set([...existingSlot.weeks, ...slot.weeks])].sort(
+              (left, right) => left - right,
+            );
+            const response = await fetch("/api/dsh-workflow/workspace", {
+              method: "PATCH",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ entity: "courseSlot", id: existingSlot.id, data: { weeks } }),
+            });
+            if (response.ok) counts.merged += 1;
+            else counts.failed += 1;
+            continue;
+          }
+          const response = await fetch("/api/dsh-workflow/workspace", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              entity: "courseSlot",
+              data: {
+                semesterId,
+                ...(courseId ? { courseId } : { courseName: course.name, color: course.color }),
+                teacher: course.teacher,
+                location: slot.location,
+                weekday: slot.weekday,
+                startPeriod: slot.startPeriod,
+                endPeriod: slot.endPeriod,
+                weeks: slot.weeks,
+              },
+            }),
+          });
+          const payload = (await response.json()) as { item?: { courseId?: string } };
+          if (response.ok) {
+            counts.created += 1;
+            if (!courseId && payload.item?.courseId) courseId = payload.item.courseId;
+          } else {
+            counts.failed += 1;
+          }
+        }
+      }
+      if (plan.periodUpdates.length) {
+        const grid = periodTimesOf(snapshot?.settings).map((period) => {
+          const patch = plan.periodUpdates.find((item) => item.index === period.index);
+          return patch ? { ...period, start: patch.start, end: patch.end } : period;
+        });
+        await fetch("/api/dsh-workflow/settings", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ periodTimes: grid }),
+        });
+      }
+      await loadWorkspace();
+      notify(
+        `课表已导入：新增 ${counts.created} 个时间段${
+          counts.merged ? `，合并 ${counts.merged} 个` : ""
+        }${counts.failed ? `，${counts.failed} 个失败` : ""}`,
+        counts.failed ? "warning" : "success",
+      );
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "导入失败，请重试。", "error");
+      counts.failed += 1;
+    }
+    return counts;
+  }
+
   async function loadDemoTimetable() {
     try {
       const response = await fetch("/api/dsh-workflow/timetable/demo", { method: "POST" });
@@ -1140,6 +1288,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                   onCreateSemester={() => setActiveView("settings")}
                   onLoadDemo={loadDemoTimetable}
                   onSaveSemester={saveSemester}
+                  onImportIcs={importTimetablePlan}
                 />
               ) : null}
               {activeView === "calendar" ? (
@@ -2107,6 +2256,7 @@ function TimetableView({
   onCreateSemester,
   onLoadDemo,
   onSaveSemester,
+  onImportIcs,
 }: {
   snapshot: Snapshot;
   todayKey: string;
@@ -2115,9 +2265,21 @@ function TimetableView({
   onCreateSemester: () => void;
   onLoadDemo: () => void;
   onSaveSemester: (semester: Semester, patch: Record<string, unknown>) => void;
+  onImportIcs: (
+    plan: IcsPlan,
+    courses: IcsCoursePlan[],
+    options?: { clearDemo?: boolean },
+  ) => Promise<{ created: number; merged: number; failed: number }>;
 }) {
+  const [icsPlan, setIcsPlan] = useState<IcsPlan | null>(null);
+  const [icsError, setIcsError] = useState("");
+  const [icsDragging, setIcsDragging] = useState(false);
+  const [icsImporting, setIcsImporting] = useState(false);
+  const [icsClearDemo, setIcsClearDemo] = useState(false);
+  const icsInputRef = useRef<HTMLInputElement>(null);
   const semester = activeSemesterOf(snapshot);
   const periods = periodTimesOf(snapshot.settings);
+  const demoLoaded = semester?.id === "semester-demo";
   const [weekOffset, setWeekOffset] = useState(0);
   const current = semester ? semesterWeekAt(semester, todayKey) : null;
   const baseWeek = semester
@@ -2150,6 +2312,107 @@ function TimetableView({
     ),
   );
 
+  async function pickIcsFile(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    setIcsError("");
+    if (file.size > 2 * 1024 * 1024) {
+      setIcsError("文件太大：请选择 2 MB 以内的 .ics 文件。");
+      return;
+    }
+    try {
+      const text = await file.text();
+      const { plan, error } = buildIcsPlan(
+        text,
+        periodTimesOf(snapshot.settings),
+        demoLoaded ? null : semester?.startDate ?? null,
+      );
+      if (!plan) {
+        setIcsError(error ?? "无法解析这个文件。");
+        return;
+      }
+      setIcsPlan(plan);
+      setIcsClearDemo(demoLoaded);
+    } catch {
+      setIcsError("读取文件失败，请重试。");
+    }
+  }
+
+  const icsDropZone = (
+    <div
+      className={`ics-drop ${icsDragging ? "is-over" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-label="导入 .ics 课表文件"
+      onClick={() => icsInputRef.current?.click()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          icsInputRef.current?.click();
+        }
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setIcsDragging(true);
+      }}
+      onDragLeave={() => setIcsDragging(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setIcsDragging(false);
+        void pickIcsFile(event.dataTransfer?.files ?? null);
+      }}
+    >
+      <strong>拖入 .ics 课表</strong>
+      <span>
+        支持旦挞 / 教务系统导出的日历；本地解析，不上传。也可以点这里选文件。
+      </span>
+      <input
+        ref={icsInputRef}
+        type="file"
+        accept=".ics,text/calendar"
+        hidden
+        onChange={(event) => {
+          void pickIcsFile(event.target.files);
+          event.target.value = "";
+        }}
+      />
+    </div>
+  );
+
+  const importDialog = icsPlan ? (
+    <IcsImportDialog
+      plan={icsPlan}
+      semesterStart={semester?.startDate ?? icsPlan.weekOne}
+      importing={icsImporting}
+      demoPresent={demoLoaded}
+      clearDemo={icsClearDemo}
+      onToggleClearDemo={() => setIcsClearDemo((value) => !value)}
+      onToggleCourse={(name) =>
+        setIcsPlan((current) =>
+          current
+            ? {
+                ...current,
+                courses: current.courses.map((course) =>
+                  course.name === name ? { ...course, selected: !course.selected } : course,
+                ),
+              }
+            : current,
+        )
+      }
+      onClose={() => setIcsPlan(null)}
+      onConfirm={async () => {
+        if (!icsPlan) return;
+        const selected = icsPlan.courses.filter((course) => course.selected);
+        setIcsImporting(true);
+        await onImportIcs(icsPlan, selected, {
+          clearDemo: icsClearDemo && demoLoaded,
+        });
+        setIcsImporting(false);
+        setIcsPlan(null);
+      }}
+    />
+  ) : null;
+
   if (!semester) {
     return (
       <div className="page-stack page-enter">
@@ -2165,16 +2428,23 @@ function TimetableView({
         <section className="panel tt-empty">
           <p className="eyebrow">NO SEMESTER YET</p>
           <h3>还没有学期</h3>
-          <p>一个学期只需要两件事：第一周的周一，以及总周数（默认 16 周）。</p>
+          <p>有 .ics 的话直接拖进来就行：会自动建学期、建课程，并按周次排好。</p>
+          {icsDropZone}
+          {icsError ? (
+            <p className="ics-error" role="alert">
+              {icsError}
+            </p>
+          ) : null}
           <div className="tt-empty-actions">
             <button className="button button--primary" type="button" onClick={onCreateSemester}>
-              去设置创建学期
+              手动创建学期
             </button>
             <button className="button button--outline" type="button" onClick={onLoadDemo}>
               载入示例课表
             </button>
           </div>
         </section>
+        {importDialog}
       </div>
     );
   }
@@ -2228,6 +2498,13 @@ function TimetableView({
           </button>
         </div>
       </section>
+
+      {icsDropZone}
+      {icsError ? (
+        <p className="ics-error" role="alert">
+          {icsError}
+        </p>
+      ) : null}
 
       <div className="tt-scroll">
         <div className="tt-grid" style={{ "--tt-rows": periods.length } as CSSProperties}>
@@ -2362,6 +2639,172 @@ function TimetableView({
           </label>
         </div>
       </section>
+      {importDialog}
+    </div>
+  );
+}
+
+function IcsImportDialog({
+  plan,
+  semesterStart,
+  importing,
+  demoPresent,
+  clearDemo,
+  onToggleClearDemo,
+  onToggleCourse,
+  onClose,
+  onConfirm,
+}: {
+  plan: IcsPlan;
+  semesterStart: string;
+  importing: boolean;
+  demoPresent: boolean;
+  clearDemo: boolean;
+  onToggleClearDemo: () => void;
+  onToggleCourse: (name: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, titleRef, onClose, !importing);
+  const selected = plan.courses.filter((course) => course.selected);
+  const slotCount = selected.reduce((total, course) => total + course.slots.length, 0);
+  const weeks = selected.flatMap((course) => course.slots.flatMap((slot) => slot.weeks));
+  const firstWeek = weeks.length ? Math.min(...weeks) : 0;
+  const lastWeek = weeks.length ? Math.max(...weeks) : 0;
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target && !importing) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="editor-dialog ics-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ics-dialog-title"
+      >
+        <header>
+          <div>
+            <p className="eyebrow">IMPORT .ICS</p>
+            <h2 id="ics-dialog-title" ref={titleRef} tabIndex={-1}>
+              导入课表
+            </h2>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="关闭导入"
+            onClick={onClose}
+            disabled={importing}
+          >
+            ×
+          </button>
+        </header>
+        <div className="ics-summary">
+          <div>
+            <strong>{plan.eventCount}</strong>
+            <span>个事件</span>
+          </div>
+          <div>
+            <strong>{plan.courses.length}</strong>
+            <span>门课程</span>
+          </div>
+          <div>
+            <strong>{slotCount}</strong>
+            <span>个时间段</span>
+          </div>
+          <div>
+            <strong>
+              {firstWeek && lastWeek ? `${firstWeek}–${lastWeek}` : "—"}
+            </strong>
+            <span>周次</span>
+          </div>
+        </div>
+        <p className="ics-note">
+          按「第 1 周周一 = {formatShortDate(semesterStart)}」换算周次。
+          {plan.periodUpdates.length
+            ? ` 作息表会同步更新 ${plan.periodUpdates.length} 个节次的起止时间。`
+            : ""}
+          {plan.unmatched ? ` ${plan.unmatched} 个事件与作息表对不上，已跳过。` : ""}
+          {plan.skipped ? ` ${plan.skipped} 个事件缺少时间或标题，已跳过。` : ""}
+        </p>
+        {demoPresent ? (
+          <label className="ics-clear-demo">
+            <input
+              type="checkbox"
+              checked={clearDemo}
+              disabled={importing}
+              onChange={onToggleClearDemo}
+            />
+            <span>先清空示例课表（示例学期与 8 门示例课程会被删除，你的真实数据不受影响）</span>
+          </label>
+        ) : null}
+        <ul className="ics-course-list">
+          {plan.courses.map((course) => (
+            <li key={course.name}>
+              <label className="ics-course-row">
+                <input
+                  type="checkbox"
+                  checked={course.selected}
+                  disabled={importing}
+                  onChange={() => onToggleCourse(course.name)}
+                />
+                <span
+                  className="tt-course-dot"
+                  style={{ background: course.color }}
+                  aria-hidden="true"
+                />
+                <span className="ics-course-main">
+                  <strong>{course.name}</strong>
+                  <small>
+                    {course.teacher || "未填教师"} · {course.slots.length} 个时间段 ·{" "}
+                    {course.eventCount} 次
+                  </small>
+                </span>
+                <span className="ics-course-when">
+                  {course.slots
+                    .map(
+                      (slot) =>
+                        `周${weekdayLabels[slot.weekday - 1]} ${slot.startPeriod}${
+                          slot.endPeriod > slot.startPeriod ? `-${slot.endPeriod}` : ""
+                        } 节${
+                          slot.weeks.length
+                            ? `（${slot.weeks[0]}${
+                                slot.weeks.length > 1
+                                  ? `–${slot.weeks[slot.weeks.length - 1]}`
+                                  : ""
+                              } 周）`
+                            : ""
+                        }`,
+                    )
+                    .join("；")}
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+        <footer>
+          <button className="button button--outline" type="button" onClick={onClose} disabled={importing}>
+            取消
+          </button>
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={onConfirm}
+            disabled={importing || !selected.length}
+          >
+            {importing
+              ? "正在导入…"
+              : selected.length
+                ? `导入 ${selected.length} 门课程`
+                : "请先选择课程"}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -5835,3 +6278,317 @@ function courseWeekLabel(slot: CourseSlot) {
   return weeks.map((week) => `第 ${week} 周`).join("、");
 }
 
+
+/* iCalendar import --------------------------------------------------------- */
+
+/** RFC 5545 line folding: a CRLF followed by one space/tab continues a line. */
+function unfoldIcs(text: string) {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n[ \t]/g, "");
+}
+function icsProperty(body: string, key: string) {
+  const rule = new RegExp("^" + key + "(?:;[^:\\n]*)?:(.*)$", "m");
+  const match = body.match(rule);
+  return match ? match[1].trim() : null;
+}
+function unescapeIcsText(value: string) {
+  return value
+    .replace(/\\n/gi, " ")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\")
+    .trim();
+}
+/**
+ * `20260908T015500Z` → epoch ms. Values without `Z` are treated as Beijing
+ * time: the export we care about (旦挞) always writes UTC, but a local export
+ * from Calendar.app writes floating local times.
+ */
+function parseIcsDate(value: string) {
+  const raw = value.trim();
+  if (/^\d{8}$/.test(raw)) return null;
+  const match = raw.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, utc] = match;
+  const ms = Date.parse(
+    `${year}-${month}-${day}T${hour}:${minute}:${second}${utc ? "Z" : "+08:00"}`,
+  );
+  return Number.isFinite(ms) ? ms : null;
+}
+/** Expand the weekly rules an exported timetable actually uses. */
+function expandIcsEvent(startMs: number, endMs: number, rrule: string | null) {
+  if (!rrule) return [[startMs, endMs]] as Array<[number, number]>;
+  const parts = new Map<string, string>();
+  for (const chunk of rrule.split(";")) {
+    const [key, value] = chunk.split("=");
+    if (key && value) parts.set(key.trim().toUpperCase(), value.trim());
+  }
+  if ((parts.get("FREQ") ?? "").toUpperCase() !== "WEEKLY") {
+    return [[startMs, endMs]] as Array<[number, number]>;
+  }
+  const interval = Math.max(1, Number(parts.get("INTERVAL") ?? "1") || 1);
+  const count = Number(parts.get("COUNT") ?? "0") || Number.POSITIVE_INFINITY;
+  const untilRaw = parts.get("UNTIL");
+  const untilMs = untilRaw ? parseIcsDate(untilRaw) : null;
+  const weekdayIndex: Record<string, number> = {
+    SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
+  };
+  const startKey = localDateKey(new Date(startMs));
+  const startWeekday = isoWeekdayOf(startKey) % 7;
+  const byDay = (parts.get("BYDAY") ?? "")
+    .split(",")
+    .map((item) => item.trim().toUpperCase().replace(/^[+-]?\d+/, ""))
+    .filter((item) => item in weekdayIndex);
+  const days = byDay.length
+    ? byDay
+    : [Object.keys(weekdayIndex).find((key) => weekdayIndex[key] === startWeekday) ?? "MO"];
+  const startMinute = shanghaiClockMinutes(new Date(startMs));
+  const duration = Math.max(0, endMs - startMs);
+  const monday = mondayKeyOf(startKey);
+  const occurrences: Array<[number, number]> = [];
+  for (let week = 0; week < 80; week += interval) {
+    for (const day of days) {
+      const index = weekdayIndex[day];
+      const offset = index === 0 ? 6 : index - 1;
+      const dateKey = addDaysToKey(monday, week * 7 + offset);
+      const ms = Date.parse(`${dateKey}T00:00:00+08:00`) + startMinute * 60_000;
+      if (ms < startMs) continue;
+      if (untilMs !== null && ms > untilMs) continue;
+      occurrences.push([ms, ms + duration]);
+      if (occurrences.length >= count) return occurrences;
+    }
+  }
+  return occurrences;
+}
+/** Map a start/end clock to the 1-based period rows of the current grid. */
+function matchPeriodRange(grid: CoursePeriod[], startMinute: number, endMinute: number) {
+  let startPeriod: number | null = null;
+  let best = Number.POSITIVE_INFINITY;
+  for (const period of grid) {
+    const diff = Math.abs(clockMinutesOf(period.start) - startMinute);
+    if (diff < best && diff <= 20) {
+      best = diff;
+      startPeriod = period.index;
+    }
+  }
+  if (startPeriod === null) return null;
+  let endPeriod = startPeriod;
+  for (const period of grid) {
+    if (period.index < startPeriod) continue;
+    if (clockMinutesOf(period.end) <= endMinute + 5) endPeriod = period.index;
+  }
+  return { startPeriod, endPeriod };
+}
+function hhmmFromMinute(minute: number) {
+  const bounded = Math.max(0, Math.min(24 * 60, Math.round(minute)));
+  return `${String(Math.floor(bounded / 60)).padStart(2, "0")}:${String(bounded % 60).padStart(2, "0")}`;
+}
+/**
+ * Turn raw .ics text into courses + slots for the current semester grid.
+ * Pure: no network, no mutation — the dialog decides what to import.
+ */
+function buildIcsPlan(
+  text: string,
+  grid: CoursePeriod[],
+  semesterStart: string | null,
+): { plan: IcsPlan | null; error: string | null } {
+  const unfolded = unfoldIcs(text);
+  if (!/BEGIN:VCALENDAR/i.test(unfolded)) {
+    return { plan: null, error: "这不是一个 .ics 日历文件。" };
+  }
+  const blocks = unfolded.split("BEGIN:VEVENT").slice(1);
+  if (!blocks.length) return { plan: null, error: "日历里没有任何事件。" };
+
+  const occurrences: IcsOccurrence[] = [];
+  let skipped = 0;
+  for (const block of blocks) {
+    const body = block.split("END:VEVENT")[0];
+    const summary = icsProperty(body, "SUMMARY");
+    const startRaw = icsProperty(body, "DTSTART");
+    if (!summary || !startRaw) {
+      skipped += 1;
+      continue;
+    }
+    const startMs = parseIcsDate(startRaw);
+    const endRaw = icsProperty(body, "DTEND");
+    const parsedEnd = endRaw ? parseIcsDate(endRaw) : null;
+    if (startMs === null) {
+      skipped += 1;
+      continue;
+    }
+    const endMs = parsedEnd ?? startMs + 45 * 60_000;
+    const description = icsProperty(body, "DESCRIPTION") ?? "";
+    const teacher = unescapeIcsText(description.split(/\\n|\n/)[0] ?? "").slice(0, 40);
+    const location = unescapeIcsText(icsProperty(body, "LOCATION") ?? "").slice(0, 80);
+    const rrule = icsProperty(body, "RRULE");
+    for (const [start, end] of expandIcsEvent(startMs, endMs, rrule)) {
+      occurrences.push({
+        summary: unescapeIcsText(summary),
+        teacher,
+        location,
+        startMs: start,
+        endMs: end,
+      });
+    }
+  }
+  if (!occurrences.length) return { plan: null, error: "没有读到任何可用的课程时间。" };
+
+  const earliestKey = occurrences
+    .map((item) => localDateKey(new Date(item.startMs)))
+    .sort()[0];
+  const weekOne = semesterStart ?? mondayKeyOf(earliestKey);
+
+  const matched: Array<{
+    occurrence: IcsOccurrence;
+    dateKey: string;
+    weekday: number;
+    startPeriod: number;
+    endPeriod: number;
+    week: number;
+  }> = [];
+  const observed = new Map<number, { start: string; end: string; count: number }>();
+  let unmatched = 0;
+  for (const occurrence of occurrences) {
+    const dateKey = localDateKey(new Date(occurrence.startMs));
+    const startMinute = shanghaiClockMinutes(new Date(occurrence.startMs));
+    const endMinute = shanghaiClockMinutes(new Date(occurrence.endMs));
+    const range = matchPeriodRange(grid, startMinute, endMinute);
+    if (!range) {
+      unmatched += 1;
+      continue;
+    }
+    const week =
+      Math.floor(
+        (Date.parse(`${dateKey}T00:00:00Z`) - Date.parse(`${weekOne}T00:00:00Z`)) / 86_400_000 / 7,
+      ) + 1;
+    if (week < 1 || week > 30) {
+      unmatched += 1;
+      continue;
+    }
+    matched.push({
+      occurrence,
+      dateKey,
+      weekday: isoWeekdayOf(dateKey),
+      startPeriod: range.startPeriod,
+      endPeriod: range.endPeriod,
+      week,
+    });
+    const slotKey = range.startPeriod;
+    const entry = observed.get(slotKey) ?? { start: "", end: "", count: 0 };
+    entry.start = hhmmFromMinute(startMinute);
+    entry.end = hhmmFromMinute(endMinute);
+    entry.count += 1;
+    observed.set(slotKey, entry);
+  }
+  if (!matched.length) {
+    return { plan: null, error: "所有时间都和当前作息表对不上，无法定位节次。" };
+  }
+
+  // Merge consecutive periods of the same course on the same day into one slot.
+  const byDay = new Map<string, typeof matched>();
+  for (const item of matched) {
+    const key = [item.occurrence.summary, item.occurrence.teacher, item.occurrence.location, item.dateKey].join("|");
+    const bucket = byDay.get(key) ?? [];
+    bucket.push(item);
+    byDay.set(key, bucket);
+  }
+  type Run = {
+    name: string;
+    teacher: string;
+    location: string;
+    weekday: number;
+    startPeriod: number;
+    endPeriod: number;
+    weeks: number[];
+    dates: number;
+  };
+  const runs: Run[] = [];
+  for (const bucket of byDay.values()) {
+    bucket.sort((left, right) => left.startPeriod - right.startPeriod);
+    let current: Run | null = null;
+    for (const item of bucket) {
+      if (current && item.startPeriod <= current.endPeriod + 1) {
+        current.endPeriod = Math.max(current.endPeriod, item.endPeriod);
+        if (!current.weeks.includes(item.week)) current.weeks.push(item.week);
+        current.dates += 1;
+        continue;
+      }
+      if (current) runs.push(current);
+      current = {
+        name: item.occurrence.summary,
+        teacher: item.occurrence.teacher,
+        location: item.occurrence.location,
+        weekday: item.weekday,
+        startPeriod: item.startPeriod,
+        endPeriod: item.endPeriod,
+        weeks: [item.week],
+        dates: 1,
+      };
+    }
+    if (current) runs.push(current);
+  }
+
+  const courseMap = new Map<string, IcsCoursePlan>();
+  let colorIndex = 0;
+  for (const run of runs) {
+    // One course row per subject: a subject taught by two teachers on
+    // different days stays a single timetable entry.
+    let course = courseMap.get(run.name);
+    if (!course) {
+      course = {
+        name: run.name,
+        teacher: run.teacher,
+        color: COURSE_COLORS[colorIndex % COURSE_COLORS.length],
+        slots: [],
+        eventCount: 0,
+        selected: true,
+      };
+      colorIndex += 1;
+      courseMap.set(run.name, course);
+    } else if (run.teacher && !course.teacher.includes(run.teacher)) {
+      course.teacher = course.teacher ? `${course.teacher} / ${run.teacher}` : run.teacher;
+    }
+    course.eventCount += run.dates;
+    const slotKey = [run.weekday, run.startPeriod, run.endPeriod, run.location].join("|");
+    const slot = course.slots.find(
+      (item) =>
+        [item.weekday, item.startPeriod, item.endPeriod, item.location].join("|") === slotKey,
+    );
+    if (slot) {
+      slot.weeks = [...new Set([...slot.weeks, ...run.weeks])].sort((left, right) => left - right);
+    } else {
+      course.slots.push({
+        weekday: run.weekday,
+        startPeriod: run.startPeriod,
+        endPeriod: run.endPeriod,
+        weeks: [...new Set(run.weeks)].sort((left, right) => left - right),
+        location: run.location,
+      });
+    }
+  }
+
+  const courses = [...courseMap.values()].sort((left, right) => left.name.localeCompare(right.name, "zh"));
+  const maxWeek = Math.max(
+    ...courses.flatMap((course) => course.slots.flatMap((slot) => slot.weeks)),
+  );
+  const periodUpdates: CoursePeriod[] = [];
+  for (const [index, value] of [...observed.entries()].sort((left, right) => left[0] - right[0])) {
+    const current = grid[index - 1];
+    if (current && (current.start !== value.start || current.end !== value.end)) {
+      periodUpdates.push({ index, start: value.start, end: value.end });
+    }
+  }
+  const year = Number(weekOne.slice(0, 4));
+  return {
+    plan: {
+      courses,
+      weekOne,
+      weekCount: Math.min(30, Math.max(1, maxWeek)),
+      semesterName: `${year} 学年 学期`,
+      eventCount: occurrences.length,
+      skipped,
+      unmatched,
+      periodUpdates,
+    },
+    error: null,
+  };
+}
