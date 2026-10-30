@@ -1580,7 +1580,20 @@ function CalendarView({
   syncing: boolean;
 }) {
   const [mode, setMode] = useState<"week" | "month" | "agenda">("week");
-  const days = weekDays(new Date());
+  const [weekOffset, setWeekOffset] = useState(0);
+  const days = useMemo(() => {
+    const anchor = new Date();
+    anchor.setDate(anchor.getDate() + weekOffset * 7);
+    return weekDays(anchor);
+  }, [weekOffset]);
+  const relativeWeek = weekOffset === 0
+    ? "本周"
+    : weekOffset === -1
+      ? "上周"
+      : weekOffset === 1
+        ? "下周"
+        : `${Math.abs(weekOffset)} 周${weekOffset > 0 ? "后" : "前"}`;
+  const weekLabel = `${relativeWeek} · ${formatShortDate(days[0].key)}—${formatShortDate(days[6].key)}`;
   return (
     <div className="page-stack page-enter">
       <section className="page-intro page-intro--calendar">
@@ -1634,6 +1647,11 @@ function CalendarView({
         <WeekCalendar
           days={days}
           events={events}
+          weekLabel={weekLabel}
+          weekOffset={weekOffset}
+          onPreviousWeek={() => setWeekOffset((value) => value - 1)}
+          onNextWeek={() => setWeekOffset((value) => value + 1)}
+          onCurrentWeek={() => setWeekOffset(0)}
           onCreate={onCreate}
           onEdit={onEdit}
         />
@@ -1657,42 +1675,36 @@ function CalendarView({
 function WeekCalendar({
   days,
   events,
+  weekLabel,
+  weekOffset,
+  onPreviousWeek,
+  onNextWeek,
+  onCurrentWeek,
   onCreate,
   onEdit,
 }: {
   days: ReturnType<typeof weekDays>;
   events: CalendarEvent[];
+  weekLabel: string;
+  weekOffset: number;
+  onPreviousWeek: () => void;
+  onNextWeek: () => void;
+  onCurrentWeek: () => void;
   onCreate: (defaults?: EditorDraft) => void;
   onEdit: (event: CalendarEvent) => void;
 }) {
   const hours = Array.from({ length: 17 }, (_, index) => index + 8);
   const now = useCurrentTime();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const hasPositionedRef = useRef(false);
   const currentPosition = nowPosition(now);
-  const todayIndex = days.findIndex((day) => day.isToday);
 
   useLayoutEffect(() => {
     const scrollArea = scrollRef.current;
-    if (!scrollArea || hasPositionedRef.current) return;
-    hasPositionedRef.current = true;
-    const minute = Math.max(
-      8 * 60,
-      Math.min(24 * 60, shanghaiClockMinutes(new Date())),
-    );
-    const ratio = (minute - 8 * 60) / (16 * 60);
-    scrollArea.scrollTop = Math.max(
-      0,
-      ratio * 1024 - scrollArea.clientHeight * 0.32,
-    );
-    if (todayIndex > 0) {
-      const dayWidth = (scrollArea.scrollWidth - 76) / 7;
-      scrollArea.scrollLeft = Math.max(
-        0,
-        76 + dayWidth * todayIndex - scrollArea.clientWidth * 0.62,
-      );
-    }
-  }, [todayIndex]);
+    if (!scrollArea) return;
+    // Start at Monday 08:00; the first time label and the full week stay visible.
+    scrollArea.scrollTop = 0;
+    scrollArea.scrollLeft = 0;
+  }, [weekOffset]);
 
   function createFromDay(
     event: ReactMouseEvent<HTMLButtonElement>,
@@ -1714,13 +1726,23 @@ function WeekCalendar({
   }
 
   return (
-    <section className="panel week-calendar" aria-label="本周日程">
+    <section className="panel week-calendar" aria-label="周日程">
       <div className="week-calendar-meta">
         <div>
-          <strong>本周时间安排</strong>
-          <span>08:00—24:00 · Asia / Shanghai</span>
+          <strong>{weekLabel}</strong>
+          <span>08:00—24:00 · Asia / Shanghai · 点击空白处新建日程</span>
         </div>
-        <small>横向滑动查看本周 · 点击空白处新建日程</small>
+        <div className="week-nav" role="group" aria-label="切换周">
+          <button type="button" onClick={onPreviousWeek} title="上一周" aria-label="上一周">
+            ← <span>上一周</span>
+          </button>
+          <button type="button" className="week-nav-current" onClick={onCurrentWeek} disabled={weekOffset === 0} title="回到本周">
+            本周
+          </button>
+          <button type="button" onClick={onNextWeek} title="下一周" aria-label="下一周">
+            <span>下一周</span> →
+          </button>
+        </div>
       </div>
       <div
         ref={scrollRef}

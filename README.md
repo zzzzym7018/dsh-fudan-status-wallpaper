@@ -34,6 +34,7 @@
 ![知行台 · 今日](assets/workflow-today.png)
 
 - **Fudan Editorial UI**：深蓝校徽侧栏、宣纸色画布、宋体标题、香槟金细线、朱红「复旦」印章与校训；今日页是一条 bento 式总览指标带，下面是主时间轨 + 右侧行动/项目/领域栏。日历、项目、学习、Ideas 和设置共用同一套纸感卡片与金色分隔；页面自带官方校徽水印与「日月光华 · 旦复旦兮」。
+- **周历回顾**：日程页支持「← 上一周 / 本周 / 下一周 →」，从周一开始显示完整一周；时间轨顶部留白，08:00 标签不会被卡片或粘性表头遮住。
 - **截图**：`assets/workflow-today.png`、`assets/workflow-calendar.png`（1440 × 960）；`assets/workflow-mobile.png`（390 × 844）。市场展示也把前两张放在最前面。
 
 - **本地数据**：`~/.dsh/profiles/<profile>/data/dsh-fudan-workflow/workspace.json`（macOS 实际路径由 `DSH_PROFILE_DIR` 决定），权限 `0600`。每个使用者、每个 DSH profile 各自一份，不经过任何远端服务。

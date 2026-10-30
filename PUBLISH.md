@@ -60,7 +60,7 @@ Open a PR. After it merges, the market/index refreshes on its own schedule.
 
 The repository has been created and pushed:
 <https://github.com/zzzzym7018/dsh-fudan-status-wallpaper>
-Release v4.1.0 and the installable tarball are also published. The only
+Release v4.2.0 and the installable tarball are also published. The only
 remaining step is the `awesome-dsh-plugin` PR; it must wait until the
 repository is at least 24 hours old (GitHub's submission CI checks this).
 npm publishing is optional and still needs an `npm login` on this machine.

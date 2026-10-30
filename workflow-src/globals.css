@@ -1266,3 +1266,45 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
   }
   .topbar-actions .button { font-size: 0; }
 }
+
+/* Week navigation and a little air above 08:00 in the schedule rails. */
+.timeline-scroll { padding-top: 12px; }
+.week-calendar-body { margin-top: 16px; }
+.week-calendar-meta {
+  background: linear-gradient(105deg, #fffdf8, #f8f1e5);
+  border-bottom-color: #e7dcc9;
+}
+.week-calendar-meta strong {
+  color: var(--primary-deep);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.week-calendar-meta span, .week-calendar-meta small { color: #8d7b5d; }
+.week-nav { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+.week-nav button {
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid #e0d4c1;
+  border-radius: 6px;
+  color: #5e6b78;
+  background: #fffdf8;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+}
+.week-nav button:hover:not(:disabled) {
+  border-color: #c8a96a;
+  color: var(--primary-deep);
+  background: #fff8ec;
+}
+.week-nav button:disabled { opacity: 0.35; cursor: not-allowed; }
+.week-nav button span { margin-inline: 2px; }
+.week-nav-current { color: #9b7b42 !important; }
+.week-nav-current:not(:disabled) { border-color: #d8c49d; }
+
+.week-calendar-meta > .week-nav { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
