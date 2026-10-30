@@ -2427,6 +2427,7 @@ function TimetableView({
   const demoLoaded = semester?.id === "semester-demo";
   const [weekOffset, setWeekOffset] = useState(0);
   const gridScrollRef = useRef<HTMLDivElement>(null);
+  const narrow = useMediaQuery("(max-width: 760px)");
   const current = semester ? semesterWeekAt(semester, todayKey) : null;
   const baseWeek = semester
     ? Math.min(Math.max(current?.week ?? 1, 1), semester.weekCount)
@@ -2439,7 +2440,12 @@ function TimetableView({
     : todayKey;
   const days = Array.from({ length: 7 }, (_, index) => {
     const key = addDaysToKey(mondayKey, index);
-    return { key, isToday: key === todayKey, day: Number(key.slice(-2)) };
+    return {
+      key,
+      weekday: index + 1,
+      isToday: key === todayKey,
+      day: Number(key.slice(-2)),
+    };
   });
   const semesterCourses = snapshot.courses.filter(
     (course) => course.semesterId === semester?.id,
@@ -2458,6 +2464,12 @@ function TimetableView({
     ),
   );
 
+  // A phone shows Monday–Friday unless the weekend actually has classes.
+  const weekendHasClass = slotsByDay[5].length > 0 || slotsByDay[6].length > 0;
+  const visibleDays = narrow && !weekendHasClass
+    ? days.filter((day) => day.weekday <= 5)
+    : days;
+
   useEffect(() => {
     const scroller = gridScrollRef.current;
     if (!scroller) return;
@@ -2465,8 +2477,10 @@ function TimetableView({
     if (scroller.scrollWidth <= scroller.clientWidth) return;
     const todayColumn = scroller.querySelector<HTMLElement>(".tt-col.is-today");
     if (!todayColumn) return;
-    scroller.scrollLeft = Math.max(0, todayColumn.offsetLeft - 58);
-  }, [week, todayKey]);
+    const timeColumn = scroller.querySelector<HTMLElement>(".tt-times");
+    const timeWidth = timeColumn?.getBoundingClientRect().width ?? 58;
+    scroller.scrollLeft = Math.max(0, todayColumn.offsetLeft - timeWidth);
+  }, [week, todayKey, visibleDays.length]);
 
   async function pickIcsFile(files: FileList | null) {
     const file = files?.[0];
@@ -2534,7 +2548,6 @@ function TimetableView({
       />
     </div>
   );
-
   if (!semester) {
     return (
       <div className="page-stack page-enter">
@@ -2629,13 +2642,21 @@ function TimetableView({
 
       <div className="tt-frame">
       <div className="tt-scroll" ref={gridScrollRef}>
-        <div className="tt-grid" style={{ "--tt-rows": periods.length } as CSSProperties}>
+        <div
+          className="tt-grid"
+          style={
+            {
+              "--tt-rows": periods.length,
+              "--tt-cols": visibleDays.length,
+            } as CSSProperties
+          }
+        >
           <div className="tt-corner" aria-hidden="true">
             节次
           </div>
-          {days.map((day, index) => (
+          {visibleDays.map((day) => (
             <div className={`tt-head ${day.isToday ? "is-today" : ""}`} key={day.key}>
-              <strong>周{weekdayLabels[index]}</strong>
+              <strong>周{weekdayLabels[day.weekday - 1]}</strong>
               <small>{day.day}</small>
             </div>
           ))}
@@ -2647,7 +2668,7 @@ function TimetableView({
               </div>
             ))}
           </div>
-          {days.map((day, index) => (
+          {visibleDays.map((day) => (
             <div
               className={`tt-col ${day.isToday ? "is-today" : ""}`}
               key={day.key}
@@ -2657,11 +2678,11 @@ function TimetableView({
                   className="tt-cell"
                   type="button"
                   key={period.index}
-                  aria-label={`在周${weekdayLabels[index]}第 ${period.index} 节添加课程`}
-                  onClick={() => onCreateAt(index + 1, period.index)}
+                  aria-label={`在周${weekdayLabels[day.weekday - 1]}第 ${period.index} 节添加课程`}
+                  onClick={() => onCreateAt(day.weekday, period.index)}
                 />
               ))}
-              {slotsByDay[index].map(({ slot, lane, laneCount }) => (
+              {slotsByDay[day.weekday - 1].map(({ slot, lane, laneCount }) => (
                 <button
                   className="tt-course"
                   type="button"
@@ -2682,6 +2703,9 @@ function TimetableView({
                   <strong>{slot.course.name}</strong>
                   {slot.location ? (
                     <span className="tt-course-room">{slot.location}</span>
+                  ) : null}
+                  {slot.course.teacher ? (
+                    <small className="tt-block-teacher">{slot.course.teacher}</small>
                   ) : null}
                 </button>
               ))}
@@ -6226,6 +6250,22 @@ function layoutCalendarDayEvents(events: CalendarEvent[]) {
     });
   const laneCount = Math.max(1, laneEnds.length);
   return positioned.map((item) => ({ ...item, laneCount }));
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia(query).matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const list = window.matchMedia(query);
+    const onChange = () => setMatches(list.matches);
+    onChange();
+    list.addEventListener?.("change", onChange);
+    return () => list.removeEventListener?.("change", onChange);
+  }, [query]);
+  return matches;
 }
 
 function useCurrentTime() {
