@@ -23,7 +23,14 @@
  * (see PRICE_TABLE) because the public API exposes no price endpoint.
  */
 
-import { generateDigest, readStore, registerWorkflowRoutes, saveStore, setLlmRunner } from './workflow-host.js';
+import {
+  generateDigest,
+  readStore,
+  registerWorkflowRoutes,
+  saveStore,
+  setLlmDiagnostics,
+  setLlmRunner,
+} from './workflow-host.js';
 import { registerAgentTools } from './agent-tools.js';
 
 const name = 'dsh-quota-wallpaper';
@@ -413,17 +420,41 @@ function apply(ctx) {
           const messages = [];
           if (system) messages.push({ role: 'system', content: [{ type: 'text', text: system }] });
           messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] });
-          let output = '';
-          for await (const chunk of child.llm.stream({
-            provider: ai.provider || 'deepseek-official',
-            model: ai.model || 'deepseek-flash',
-            messages,
-          })) {
-            if (chunk?.kind === 'text-delta') output += chunk.text ?? chunk.delta ?? '';
-            else if (chunk?.kind === 'error' || chunk?.kind === 'aborted') {
-              throw new Error('model call failed');
-            }
+          // Use whatever route this profile actually registered.
+          let providers = [];
+          try {
+            providers = (child.llm.listProviders?.() ?? []).map((entry) =>
+              typeof entry === 'string' ? entry : entry?.id ?? entry?.name ?? '',
+            ).filter(Boolean);
+          } catch {
+            providers = [];
           }
+          const provider = providers.includes(ai.provider) ? ai.provider : providers[0] ?? ai.provider ?? 'deepseek-official';
+          const model = ai.model || 'deepseek-flash';
+          const kinds = new Set();
+          let output = '';
+          try {
+            for await (const chunk of child.llm.stream({ provider, model, messages })) {
+              // Stream chunks carry `type` (text-delta, reasoning-delta, …);
+              // some terminal chunks carry `kind` (error, aborted, finish).
+              const type = chunk?.type ?? chunk?.kind ?? 'unknown';
+              kinds.add(String(type));
+              if (type === 'text-delta') {
+                output += chunk.text ?? '';
+              } else if (type === 'error' || type === 'aborted' || chunk?.kind === 'error') {
+                const failure = chunk.failure ?? chunk.error ?? {};
+                throw new Error(`${type}: ${JSON.stringify(failure).slice(0, 240)}`);
+              }
+            }
+          } catch (error) {
+            setLlmDiagnostics({
+              provider, model, kinds: [...kinds], output: output.length,
+              lastError: String(error?.message ?? error).slice(0, 300),
+            });
+            throw error;
+          }
+          setLlmDiagnostics({ provider, model, kinds: [...kinds], output: output.length, lastError: null });
+          if (!output) throw new Error('empty completion');
           return output;
         });
         return () => setLlmRunner(null);

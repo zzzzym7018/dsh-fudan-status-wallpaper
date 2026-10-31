@@ -1121,11 +1121,15 @@ export function registerWorkflowRoutes(ctx, bindHost) {
  * without a provider.
  */
 let llmRunner = null;
+let llmDiagnostics = null;
 export function setLlmRunner(runner) {
   llmRunner = typeof runner === 'function' ? runner : null;
 }
+export function setLlmDiagnostics(next) {
+  llmDiagnostics = { ...(llmDiagnostics ?? {}), ...(next ?? {}), at: nowIso() };
+}
 export function aiStatus() {
-  return { hasRunner: Boolean(llmRunner) };
+  return { hasRunner: Boolean(llmRunner), lastRun: llmDiagnostics };
 }
 
 const CLAIM_KINDS = new Set(['fact', 'preference', 'habit', 'constraint']);
@@ -1497,12 +1501,17 @@ async function generateDigest(store, options = {}) {
   let generated = null;
   let source = 'template';
   if (llmRunner && store.settings.ai?.enabled !== false) {
-    try {
-      const raw = await llmRunner({ prompt: digestPrompt(context), system: '你是日程助手，只输出 JSON。' });
-      generated = parseDigest(raw);
-      if (generated) source = 'llm';
-    } catch (error) {
-      generated = null;
+    for (let attempt = 0; attempt < 2 && !generated; attempt += 1) {
+      try {
+        const prompt = attempt === 0
+          ? digestPrompt(context)
+          : `${digestPrompt(context)}\n\n上一次的回复不是合法 JSON。请只输出一个 JSON 对象。`;
+        const raw = await llmRunner({ prompt, system: '你是日程助手，只输出 JSON。' });
+        generated = parseDigest(raw);
+        if (generated) source = 'llm';
+      } catch (error) {
+        generated = null;
+      }
     }
   }
   const body = generated ?? templateDigest(context);
@@ -1676,11 +1685,16 @@ async function rebuildProfile(store, options = {}) {
   }
   const days = clamp(options.days, 7, 365, REBUILD_DAYS);
   const context = rebuildContext(store, days);
-  const raw = await llmRunner({
-    prompt: rebuildPrompt(context),
-    system: '你在为用户维护长期记忆，只输出 JSON。',
-  });
-  const parsed = parseRebuild(raw);
+  let parsed = null;
+  for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
+    const raw = await llmRunner({
+      prompt: attempt === 0
+        ? rebuildPrompt(context)
+        : `${rebuildPrompt(context)}\n\n上一次的回复不是合法 JSON。请只输出一个 JSON 对象，不要解释。`,
+      system: '你在为用户维护长期记忆，只输出 JSON。',
+    });
+    parsed = parseRebuild(raw);
+  }
   if (!parsed) throw new HttpError(502, '模型没有返回可用的画像结构，请重试。');
   const now = nowIso();
   const added = [];
