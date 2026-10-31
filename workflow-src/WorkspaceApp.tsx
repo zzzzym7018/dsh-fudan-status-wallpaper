@@ -180,6 +180,7 @@ type Digest = {
   weather: string;
   stats: Record<string, number>;
 };
+type AiUsage = { date: string; calls: number; input: number; output: number };
 type AiSettings = {
   enabled: boolean;
   provider: string;
@@ -187,6 +188,7 @@ type AiSettings = {
   digestTime: string;
   digestDays: number[];
   autoProfile: boolean;
+  usage?: AiUsage;
 };
 type CoursePeriod = { index: number; start: string; end: string };
 type ReminderSettings = {
@@ -5682,6 +5684,18 @@ function SettingsView({
               <option value="deepseek-v4-pro">deepseek-v4-pro</option>
             </select>
           </div>
+          {settings?.ai?.usage ? (
+            <div className="reminder-setting">
+              <span>
+                <strong>今天的用量</strong>
+                <small>
+                  {settings.ai.usage.calls} 次调用 · 输入 {settings.ai.usage.input.toLocaleString()} /
+                  输出 {settings.ai.usage.output.toLocaleString()} tokens
+                </small>
+              </span>
+              <span className="ai-usage-since">{settings.ai.usage.date}</span>
+            </div>
+          ) : null}
           <div className="reminder-setting reminder-setting--time">
             <span>
               <strong>生成时间</strong>

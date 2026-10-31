@@ -2141,3 +2141,5 @@ input:focus, textarea:focus, select:focus { border-color: #b89a62; outline-color
 .claim-summary p:not(.eyebrow) { margin: 4px 0 0; color: #2b3c4e; font-size: 12.5px; line-height: 1.7; }
 .claim-summary small { display: block; margin-top: 5px; color: #9a8f7c; font-size: 10px; }
 .claim-summary-empty { margin-top: 12px; }
+
+.ai-usage-since { color: #9a8f7c; font-family: var(--font-mono); font-size: 10px; }

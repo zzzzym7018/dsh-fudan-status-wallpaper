@@ -30,6 +30,7 @@ import {
   saveStore,
   setLlmDiagnostics,
   setLlmRunner,
+  setLlmUsage,
 } from './workflow-host.js';
 import { registerAgentTools } from './agent-tools.js';
 
@@ -433,6 +434,7 @@ function apply(ctx) {
           const model = ai.model || 'deepseek-flash';
           const kinds = new Set();
           let output = '';
+          let usage = null;
           try {
             for await (const chunk of child.llm.stream({ provider, model, messages })) {
               // Stream chunks carry `type` (text-delta, reasoning-delta, …);
@@ -441,6 +443,12 @@ function apply(ctx) {
               kinds.add(String(type));
               if (type === 'text-delta') {
                 output += chunk.text ?? '';
+              } else if (type === 'usage') {
+                const raw = chunk.usage ?? chunk;
+                usage = {
+                  input: raw.inputTokens ?? raw.promptTokens ?? raw.prompt_tokens ?? 0,
+                  output: raw.outputTokens ?? raw.completionTokens ?? raw.completion_tokens ?? 0,
+                };
               } else if (type === 'error' || type === 'aborted' || chunk?.kind === 'error') {
                 const failure = chunk.failure ?? chunk.error ?? {};
                 throw new Error(`${type}: ${JSON.stringify(failure).slice(0, 240)}`);
@@ -454,9 +462,10 @@ function apply(ctx) {
             });
             throw error;
           }
+          setLlmUsage(usage);
           setLlmDiagnostics({
             provider, model, kinds: [...kinds], output: output.length,
-            preview: output.slice(0, 200), lastError: null,
+            preview: output.slice(0, 200), usage, lastError: null,
           });
           if (!output) throw new Error('empty completion');
           return output;

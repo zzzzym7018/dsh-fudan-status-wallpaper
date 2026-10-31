@@ -1122,8 +1122,18 @@ export function registerWorkflowRoutes(ctx, bindHost) {
  */
 let llmRunner = null;
 let llmDiagnostics = null;
+let lastUsage = null;
 export function setLlmRunner(runner) {
   llmRunner = typeof runner === 'function' ? runner : null;
+}
+export function setLlmUsage(usage) {
+  lastUsage = usage ?? null;
+}
+/** The runner records usage; the caller folds it into the store's daily tally. */
+export function takeLlmUsage() {
+  const usage = lastUsage;
+  lastUsage = null;
+  return usage;
 }
 export function setLlmDiagnostics(next) {
   llmDiagnostics = { ...(llmDiagnostics ?? {}), ...(next ?? {}), at: nowIso() };
@@ -1219,6 +1229,19 @@ function deleteClaim(store, id) {
 
 /* Drafts ------------------------------------------------------------------ */
 const DRAFT_KINDS = new Set(['task', 'event', 'courseSlot']);
+function recordUsage(store, usage) {
+  if (!usage) return;
+  const date = todayKey();
+  const ai = store.settings.ai ?? (store.settings.ai = defaultAi());
+  const current = ai.usage && ai.usage.date === date
+    ? ai.usage
+    : { date, calls: 0, input: 0, output: 0 };
+  current.calls += 1;
+  current.input += Number(usage.input) || 0;
+  current.output += Number(usage.output) || 0;
+  ai.usage = current;
+}
+
 function pruneDrafts(store) {
   const pending = store.drafts.filter((draft) => draft.status === 'pending');
   if (pending.length <= 20) return;
@@ -1513,6 +1536,7 @@ async function generateDigest(store, options = {}) {
           ? digestPrompt(context)
           : `${digestPrompt(context)}\n\n上一次的回复不是合法 JSON。请只输出一个 JSON 对象。`;
         const raw = await llmRunner({ prompt, system: '你是日程助手，只输出 JSON。' });
+        recordUsage(store, takeLlmUsage());
         generated = parseDigest(raw);
         if (generated) source = 'llm';
       } catch (error) {
@@ -1706,6 +1730,7 @@ async function rebuildProfile(store, options = {}) {
         : `${rebuildPrompt(context)}\n\n上一次的回复不是合法 JSON。请只输出一个 JSON 对象，不要解释。`,
       system: '你在为用户维护长期记忆，只输出 JSON。',
     });
+    recordUsage(store, takeLlmUsage());
     parsed = parseRebuild(raw);
   }
   if (!parsed) throw new HttpError(502, '模型没有返回可用的画像结构，请重试。');
