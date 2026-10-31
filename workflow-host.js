@@ -1393,8 +1393,11 @@ function digestPrompt(context) {
     '你是复旦大学学生的日程助手。请根据下面的结构化数据，写一份精简的"昨日回顾 + 今日安排"简报。',
     '要求：中文；不超过 220 字；不要编造数据里没有的事实；天气只写对出行有影响的部分；',
     '语气自然，像同学提醒，不要用"亲""宝子"等称呼，不要罗列全部条目，只挑最重要的。',
+    '另外，如果今天的数据里能看出值得长期记住的习惯/偏好/约束（最多 3 条，每条要能从数据里找到依据），',
+    '把它们放进 claims；看不出来就给空数组，不要编造。',
     '只输出 JSON，不要 Markdown 代码块，格式：',
-    '{"headline":"一句话标题","sections":[{"title":"小标题","body":"一两句"}],"nudge":"一句话建议"}',
+    '{"headline":"一句话标题","sections":[{"title":"小标题","body":"一两句"}],"nudge":"一句话建议",',
+    '"claims":[{"text":"一句话","kind":"habit|preference|constraint|fact"}]}',
     '',
     JSON.stringify(context, null, 2),
   ].join('\n');
@@ -1413,7 +1416,14 @@ function parseDigest(textValue) {
       .filter((item) => item.title || item.body)
       .slice(0, 4);
     if (!headline && !sections.length) return null;
-    return { headline, sections, nudge: text(parsed.nudge).slice(0, 120) };
+    const claims = (Array.isArray(parsed.claims) ? parsed.claims : [])
+      .map((item) => ({
+        text: text(item?.text).slice(0, 120),
+        kind: ['fact', 'preference', 'habit', 'constraint'].includes(item?.kind) ? item.kind : 'preference',
+      }))
+      .filter((item) => item.text)
+      .slice(0, 3);
+    return { headline, sections, nudge: text(parsed.nudge).slice(0, 120), claims };
   } catch {
     return null;
   }
@@ -1505,6 +1515,21 @@ async function generateDigest(store, options = {}) {
   store.digests.push(entry);
   store.digests.sort((left, right) => String(right.date).localeCompare(String(left.date)));
   store.digests = store.digests.slice(0, MAX_DIGESTS);
+  if (store.settings.ai?.autoProfile !== false && Array.isArray(body.claims) && body.claims.length) {
+    for (const candidate of body.claims) {
+      try {
+        addClaim(store, {
+          text: candidate.text,
+          kind: candidate.kind,
+          source: 'derived',
+          evidence: [`digest:${dateKey}`],
+          confidence: 0.45,
+        });
+      } catch {
+        /* a bad candidate must never break the digest */
+      }
+    }
+  }
   return entry;
 }
 
