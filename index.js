@@ -449,11 +449,15 @@ function apply(ctx) {
           } catch (error) {
             setLlmDiagnostics({
               provider, model, kinds: [...kinds], output: output.length,
+              preview: output.slice(0, 200),
               lastError: String(error?.message ?? error).slice(0, 300),
             });
             throw error;
           }
-          setLlmDiagnostics({ provider, model, kinds: [...kinds], output: output.length, lastError: null });
+          setLlmDiagnostics({
+            provider, model, kinds: [...kinds], output: output.length,
+            preview: output.slice(0, 200), lastError: null,
+          });
           if (!output) throw new Error('empty completion');
           return output;
         });

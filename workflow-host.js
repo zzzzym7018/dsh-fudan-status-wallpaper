@@ -1424,20 +1424,26 @@ function parseDigest(textValue) {
   if (start === -1 || end <= start) return null;
   try {
     const parsed = JSON.parse(raw.slice(start, end + 1));
-    const headline = text(parsed.headline).slice(0, 80);
-    const sections = (Array.isArray(parsed.sections) ? parsed.sections : [])
+    const headline = text(parsed.headline ?? parsed.title ?? parsed['标题']).slice(0, 80);
+    const rawSections = parsed.sections ?? parsed['段落'] ?? parsed.blocks;
+    const sections = (Array.isArray(rawSections) ? rawSections : [])
       .map((item) => ({ title: text(item?.title).slice(0, 20), body: text(item?.body).slice(0, 400) }))
       .filter((item) => item.title || item.body)
       .slice(0, 4);
     if (!headline && !sections.length) return null;
-    const claims = (Array.isArray(parsed.claims) ? parsed.claims : [])
+    const claims = (Array.isArray(parsed.claims ?? parsed.memories ?? parsed['词条']) ? (parsed.claims ?? parsed.memories ?? parsed['词条']) : [])
       .map((item) => ({
         text: text(item?.text).slice(0, 120),
         kind: ['fact', 'preference', 'habit', 'constraint'].includes(item?.kind) ? item.kind : 'preference',
       }))
       .filter((item) => item.text)
       .slice(0, 3);
-    return { headline, sections, nudge: text(parsed.nudge).slice(0, 120), claims };
+    return {
+      headline,
+      sections,
+      nudge: text(parsed.nudge ?? parsed['建议'] ?? parsed.tip).slice(0, 120),
+      claims,
+    };
   } catch {
     return null;
   }
@@ -1659,11 +1665,16 @@ function parseRebuild(raw) {
   const value = String(raw).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   const start = value.indexOf('{');
   const end = value.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
+  const prose = value.replace(/```[a-z]*/gi, '').replace(/```/g, '').trim();
+  if (start === -1 || end <= start) {
+    // No JSON at all: keep the prose as the summary instead of failing.
+    return prose.length >= 20 ? { summary: prose.slice(0, 400), claims: [], prose: true } : null;
+  }
   try {
     const parsed = JSON.parse(value.slice(start, end + 1));
-    const summary = text(parsed.summary).slice(0, 400);
-    const claims = (Array.isArray(parsed.claims) ? parsed.claims : [])
+    const summary = text(parsed.summary ?? parsed.profile ?? parsed['画像'] ?? parsed['摘要']).slice(0, 400);
+    const rawClaims = parsed.claims ?? parsed.memories ?? parsed['词条'] ?? parsed.memory;
+    const claims = (Array.isArray(rawClaims) ? rawClaims : [])
       .map((item) => ({
         text: text(item?.text).slice(0, 120),
         kind: ['fact', 'preference', 'habit', 'constraint'].includes(item?.kind) ? item.kind : 'preference',
@@ -1671,11 +1682,13 @@ function parseRebuild(raw) {
       }))
       .filter((item) => item.text)
       .slice(0, 12);
-    if (!summary && !claims.length) return null;
-    return { summary, claims };
+    if (summary || claims.length) return { summary, claims };
   } catch {
-    return null;
+    /* fall through to the prose path */
   }
+  // The model answered with unparsable JSON: keep the prose as the summary.
+  if (prose.length >= 20) return { summary: prose.slice(0, 400), claims: [], prose: true };
+  return null;
 }
 
 /** Rebuild the summary + claims from the last `days` of activity. */
