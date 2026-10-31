@@ -56,6 +56,46 @@
 - **升级后需要重启 DSH**：本地工作台的 Host 路由随 DSH 启动注册。只刷新网页不够，退出并重新打开 DSH 后，侧栏的知行台才会加载；页面会显示「需要重启 DSH」的提示和重试按钮。
 - **源码与构建**：`workflow-src/` 是可读的 React 源码（来自 `personal-workflow`），`workflow-dist/` 是已经构建好的离线 bundle；安装插件不需要 Node、pnpm 或额外依赖。
 
+## 画像 · Agent · 每日简报（v5.5）
+
+### 个人画像
+
+长期记忆存成 `profile.claims[]`，每条带 `kind`（事实/偏好/习惯/约束）、`source`（用户/推导/导入）、`evidence`、`confidence`、`confirmations` 与状态。
+
+- 你可以在设置页手动添加；说「记住我晚上十点后效率更高」时，agent 会调 `workflow_remember` 写一条。
+- 夜间总结会从当天数据里提取候选（最多 3 条、需要有证据），习惯/偏好类先以「待确认」写入，连续确认三次转正；事实类必须你手动确认。
+- 重复的 claim 会合并计数而不是堆两条；超过 120 条时先淘汰最旧的「待确认」。
+- agent 每次排日程前都会读一次画像（`workflow_get_profile`），避免把事排到你明确不想要的时间。
+
+### Agent 工具
+
+插件往 DSH 注册了 8 个工具，直接对话就能用（不需要配 MCP）：
+
+| 工具 | 作用 |
+|---|---|
+| `workflow_day_overview` | 某天的课程/任务/日程/DDL |
+| `workflow_week_overview` | 某一周的课表与周次 |
+| `workflow_search` | 搜任务/项目/Ideas，避免重复创建 |
+| `workflow_get_profile` | 读画像 |
+| `workflow_propose_schedule` | 写一批草稿（任务/日程/课程时间），返回冲突 |
+| `workflow_apply_draft` | 你同意后落库 |
+| `workflow_update_task` | 勾完成、改期 |
+| `workflow_remember` | 写入画像 |
+| `workflow_run_digest` | 立刻生成简报 |
+
+**写入一律先草稿**：`propose_schedule` 只产生待确认条目，今日页会出现「N 批改动等你确认」，点开逐条看、确认后才落库，也可以整批放弃。工具不接受自然语言时间——模型负责把「下周三下午三点」解析成带 `+08:00` 的 ISO 字符串，工具只做校验和冲突检测。
+
+### 每日简报
+
+- 默认 22:30 生成，可改时间与星期；DSH 没开着就错过，**下一次启动会补跑**（没有常驻进程，这是插件能做到的边界）。
+- 内容：昨日完成/未完成、今日任务与课程、未来 3 天 DDL、天气（Open-Meteo，复旦邯郸校区）。先调一次 `ctx.llm`（默认 `deepseek-flash`）生成自然语言，失败就退回本地模板，保证一定有内容。
+- 今日页顶部展示「今日简报」卡片，可手动重新生成；设置页能换模型、改时间、关掉。
+- **不存任何 API key**：模型调用走 DSH 的 LLM 服务，用的是这个用户在 DSH 里配置的 provider 与额度，天然一人一份。
+
+### 与 AI 相关的本地文件
+
+`profile.claims`、`drafts`、`digests` 仍然写在 `workspace.json` 里（v3），没有额外的云调用；唯一的外发是那一次模型请求，内容是你自己的日程摘要。
+
 ### 课表相关接口
 
 `.ics` 导入完全在前端完成：解析 → 预览（可逐门取消）→ 复用 `semester / courseSlot` 与 `settings.periodTimes` 写入，没有新增上传接口。

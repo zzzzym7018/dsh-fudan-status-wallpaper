@@ -28,7 +28,7 @@ const ENTITY_MAP = {
 };
 const ENTITIES = new Set(Object.values(ENTITY_MAP));
 /** Current store layout. Older files are upgraded in place by migrateStore(). */
-const STORE_VERSION = 2;
+const STORE_VERSION = 3;
 /** Highest period index a timetable slot may use. */
 const MAX_PERIOD = 13;
 /**
@@ -85,8 +85,22 @@ function clamp(value, min, max, fallback) {
 function defaultReminders() {
   return { enabled: true, dailyDigest: true, digestTime: '08:00', leadHours: [24, 2] };
 }
+function defaultAi() {
+  return {
+    enabled: true,
+    provider: 'deepseek-official',
+    model: 'deepseek-flash',
+    digestTime: '22:30',
+    digestDays: [1, 2, 3, 4, 5, 6, 7],
+    autoProfile: true,
+  };
+}
 function defaultSettings() {
-  return { periodTimes: DEFAULT_PERIOD_TIMES.map((item) => ({ ...item })), reminders: defaultReminders() };
+  return {
+    periodTimes: DEFAULT_PERIOD_TIMES.map((item) => ({ ...item })),
+    reminders: defaultReminders(),
+    ai: defaultAi(),
+  };
 }
 function emptyProfile() {
   return { nickname: 'FDUer', school: '复旦大学', claims: [] };
@@ -99,6 +113,7 @@ function emptyStore() {
     semesters: [], courses: [], courseSlots: [],
     projects: [], tasks: [], domains: [], learningLogs: [],
     knowledgeNotes: [], ideas: [], events: [],
+    drafts: [], digests: [],
   };
 }
 
@@ -159,6 +174,10 @@ function migrateStore(store) {
   else {
     if (!Array.isArray(store.settings.periodTimes) || !store.settings.periodTimes.length) { store.settings.periodTimes = defaultSettings().periodTimes; changed = true; }
     if (!store.settings.reminders || typeof store.settings.reminders !== 'object') { store.settings.reminders = defaultReminders(); changed = true; }
+    if (!store.settings.ai || typeof store.settings.ai !== 'object') { store.settings.ai = defaultAi(); changed = true; }
+  }
+  for (const key of ['drafts', 'digests']) {
+    if (!Array.isArray(store[key])) { store[key] = []; changed = true; }
   }
   for (const key of ['semesters', 'courses', 'courseSlots']) {
     if (!Array.isArray(store[key])) { store[key] = []; changed = true; }
@@ -213,6 +232,7 @@ function seedStore() {
     version: STORE_VERSION,
     profile: emptyProfile(),
     settings: defaultSettings(),
+    drafts: [], digests: [],
     ...demoCourses(),
     projects: [
       {
@@ -355,7 +375,10 @@ function snapshot(store) {
     settings: {
       periodTimes: store.settings.periodTimes,
       reminders: store.settings.reminders,
+      ai: store.settings.ai,
     },
+    drafts: listDrafts(store),
+    digest: store.digests?.[0] ?? null,
     semesters: store.semesters.filter(active).sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))),
     activeSemesterId: activeSemesterId(store),
     courses,
@@ -877,6 +900,96 @@ async function handleWorkspace(req, res, pathname) {
     return sendJson(res, 405, { error: '不支持的方法。' });
   }
 
+  if (pathname === `${PREFIX}/claims`) {
+    const store = readStore();
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      return sendJson(res, 200, { claims: listClaims(store) });
+    }
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      const claim = addClaim(store, body);
+      saveStore(store);
+      return sendJson(res, 201, { claim });
+    }
+    if (req.method === 'PATCH') {
+      const body = await readBody(req);
+      if (typeof body.id !== 'string' || !body.id) throw new HttpError(400, '缺少画像 id。');
+      const claim = updateClaim(store, body.id, body);
+      saveStore(store);
+      return sendJson(res, 200, { claim });
+    }
+    if (req.method === 'DELETE') {
+      const body = await readBody(req);
+      if (typeof body.id !== 'string' || !body.id) throw new HttpError(400, '缺少画像 id。');
+      const result = deleteClaim(store, body.id);
+      saveStore(store);
+      return sendJson(res, 200, result);
+    }
+    return sendJson(res, 405, { error: '不支持的方法。' });
+  }
+  if (pathname === `${PREFIX}/drafts`) {
+    const store = readStore();
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      return sendJson(res, 200, { drafts: listDrafts(store) });
+    }
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      const draft = createDraft(store, body);
+      saveStore(store);
+      return sendJson(res, 201, { draft });
+    }
+    return sendJson(res, 405, { error: '不支持的方法。' });
+  }
+  if (pathname === `${PREFIX}/drafts/apply` && req.method === 'POST') {
+    const body = await readBody(req);
+    if (typeof body.id !== 'string' || !body.id) throw new HttpError(400, '缺少草稿 id。');
+    const store = readStore();
+    const result = applyDraft(store, body.id);
+    saveStore(store);
+    return sendJson(res, 200, result);
+  }
+  if (pathname === `${PREFIX}/drafts/discard` && req.method === 'POST') {
+    const body = await readBody(req);
+    if (typeof body.id !== 'string' || !body.id) throw new HttpError(400, '缺少草稿 id。');
+    const store = readStore();
+    const draft = discardDraft(store, body.id);
+    saveStore(store);
+    return sendJson(res, 200, { draft });
+  }
+  if (pathname === `${PREFIX}/digest`) {
+    const store = readStore();
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const latest = store.digests[0] ?? null;
+      return sendJson(res, 200, { latest, history: store.digests.slice(0, 7), ai: aiStatus() });
+    }
+    return sendJson(res, 405, { error: '不支持的方法。' });
+  }
+  if (pathname === `${PREFIX}/digest/run` && req.method === 'POST') {
+    const body = await readBody(req);
+    const store = readStore();
+    const entry = await generateDigest(store, { date: body.date });
+    saveStore(store);
+    return sendJson(res, 201, { digest: entry });
+  }
+  if (pathname === `${PREFIX}/settings/ai` && req.method === 'PATCH') {
+    const body = await readBody(req);
+    const store = readStore();
+    const current = store.settings.ai ?? defaultAi();
+    const next = {
+      enabled: body.enabled === undefined ? current.enabled : Boolean(body.enabled),
+      provider: text(body.provider) || current.provider,
+      model: text(body.model) || current.model,
+      digestTime: /^\d{2}:\d{2}$/.test(String(body.digestTime ?? '')) ? body.digestTime : current.digestTime,
+      digestDays: Array.isArray(body.digestDays)
+        ? [...new Set(body.digestDays.map(Number).filter((day) => day >= 1 && day <= 7))].sort()
+        : current.digestDays,
+      autoProfile: body.autoProfile === undefined ? current.autoProfile : Boolean(body.autoProfile),
+    };
+    store.settings.ai = next;
+    saveStore(store);
+    return sendJson(res, 200, { ai: next, hasRunner: Boolean(llmRunner) });
+  }
+
   if (pathname === `${PREFIX}/profile` && req.method === 'PATCH') {
     const body = await readBody(req);
     const store = readStore();
@@ -991,3 +1104,426 @@ export function registerWorkflowRoutes(ctx, bindHost) {
     'dsh-quota-wallpaper: local workflow routes',
   );
 }
+
+/* ── AI：画像 / 草稿 / 每日简报 ─────────────────────────────────────────────
+ * The model call is injected from the plugin entry (ctx.llm); this module owns
+ * the data and the deterministic fallbacks, so everything below is testable
+ * without a provider.
+ */
+let llmRunner = null;
+export function setLlmRunner(runner) {
+  llmRunner = typeof runner === 'function' ? runner : null;
+}
+export function aiStatus() {
+  return { hasRunner: Boolean(llmRunner) };
+}
+
+const CLAIM_KINDS = new Set(['fact', 'preference', 'habit', 'constraint']);
+const CLAIM_SOURCES = new Set(['user', 'derived', 'import']);
+const MAX_CLAIMS = 120;
+const MAX_DIGESTS = 30;
+
+function claimKey(value) {
+  return text(value).replace(/\s+/g, ' ').toLowerCase();
+}
+function clamp01(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : fallback;
+}
+function listClaims(store) {
+  return store.profile.claims
+    .filter((claim) => claim.status !== 'retired')
+    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+}
+function addClaim(store, data = {}) {
+  const body = text(data.text).slice(0, 280);
+  if (!body) throw new HttpError(400, '画像内容不能为空。');
+  const kind = CLAIM_KINDS.has(data.kind) ? data.kind : 'fact';
+  const source = CLAIM_SOURCES.has(data.source) ? data.source : 'user';
+  const now = nowIso();
+  const duplicate = store.profile.claims.find(
+    (claim) => claim.status !== 'retired' && claimKey(claim.text) === claimKey(body),
+  );
+  if (duplicate) {
+    duplicate.updatedAt = now;
+    duplicate.confirmations = (duplicate.confirmations ?? 0) + 1;
+    if (duplicate.confirmations >= 3 || source === 'user') {
+      duplicate.status = 'active';
+      duplicate.lastConfirmedAt = now;
+    }
+    return duplicate;
+  }
+  if (store.profile.claims.length >= MAX_CLAIMS) {
+    const stale = store.profile.claims
+      .filter((claim) => claim.status === 'new')
+      .sort((left, right) => String(left.updatedAt).localeCompare(String(right.updatedAt)))[0];
+    if (stale) stale.status = 'retired';
+  }
+  const claim = {
+    id: `claim-${crypto.randomUUID()}`,
+    text: body,
+    kind,
+    source,
+    evidence: Array.isArray(data.evidence) ? data.evidence.slice(0, 8).map((item) => String(item).slice(0, 80)) : [],
+    confidence: clamp01(data.confidence, source === 'user' ? 1 : 0.5),
+    status: source === 'user' ? 'active' : 'new',
+    confirmations: source === 'user' ? 1 : 0,
+    createdAt: now,
+    updatedAt: now,
+    lastConfirmedAt: source === 'user' ? now : null,
+    expiresAt: null,
+  };
+  store.profile.claims.push(claim);
+  return claim;
+}
+function updateClaim(store, id, data = {}) {
+  const claim = store.profile.claims.find((item) => item.id === id);
+  if (!claim) throw new HttpError(404, '这条画像已经不存在。');
+  const now = nowIso();
+  if (data.text !== undefined) {
+    const body = text(data.text).slice(0, 280);
+    if (!body) throw new HttpError(400, '画像内容不能为空。');
+    claim.text = body;
+  }
+  if (data.kind !== undefined && CLAIM_KINDS.has(data.kind)) claim.kind = data.kind;
+  if (data.confirm === true) {
+    claim.confirmations = (claim.confirmations ?? 0) + 1;
+    claim.lastConfirmedAt = now;
+    claim.status = claim.confirmations >= 3 ? 'active' : 'active';
+    claim.confidence = Math.min(1, (claim.confidence ?? 0.5) + 0.15);
+  }
+  if (data.status === 'retired') claim.status = 'retired';
+  claim.updatedAt = now;
+  return claim;
+}
+function deleteClaim(store, id) {
+  const before = store.profile.claims.length;
+  store.profile.claims = store.profile.claims.filter((item) => item.id !== id);
+  if (store.profile.claims.length === before) throw new HttpError(404, '这条画像已经不存在。');
+  return { deleted: true };
+}
+
+/* Drafts ------------------------------------------------------------------ */
+const DRAFT_KINDS = new Set(['task', 'event', 'courseSlot']);
+function pruneDrafts(store) {
+  const pending = store.drafts.filter((draft) => draft.status === 'pending');
+  if (pending.length <= 20) return;
+  const keep = new Set(pending.slice(-20).map((draft) => draft.id));
+  store.drafts = store.drafts.filter((draft) => draft.status !== 'pending' || keep.has(draft.id));
+}
+function normalizeDraftItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const kind = text(item.kind);
+  if (!DRAFT_KINDS.has(kind)) return null;
+  const op = item.op === 'update' || item.op === 'delete' ? item.op : 'create';
+  if (op !== 'create' && typeof item.id !== 'string') return null;
+  return {
+    kind,
+    op,
+    ...(item.id ? { id: item.id } : {}),
+    data: item.data && typeof item.data === 'object' ? item.data : {},
+  };
+}
+function createDraft(store, data = {}) {
+  const items = (Array.isArray(data.items) ? data.items : []).slice(0, 20).map(normalizeDraftItem).filter(Boolean);
+  if (!items.length) throw new HttpError(400, '草稿里没有可用的改动。');
+  const draft = {
+    id: `draft-${crypto.randomUUID()}`,
+    createdAt: nowIso(),
+    status: 'pending',
+    source: data.source === 'agent' ? 'agent' : 'ui',
+    reason: text(data.reason).slice(0, 240),
+    items,
+  };
+  store.drafts.push(draft);
+  pruneDrafts(store);
+  return draft;
+}
+function listDrafts(store) {
+  return store.drafts.filter((draft) => draft.status === 'pending');
+}
+function applyDraft(store, id) {
+  const draft = store.drafts.find((item) => item.id === id);
+  if (!draft) throw new HttpError(404, '这个草稿已经不存在。');
+  if (draft.status !== 'pending') throw new HttpError(409, '这个草稿已经处理过了。');
+  const clone = structuredClone(store);
+  const created = [];
+  for (const item of draft.items) {
+    const entity = ENTITY_MAP[item.kind];
+    if (!entity) throw new HttpError(400, `未知的草稿类型：${item.kind}`);
+    if (item.op === 'update') {
+      updateEntity(entity, item.id, item.data, clone);
+    } else if (item.op === 'delete') {
+      archiveEntity(entity, item.id, clone, 'delete');
+    } else {
+      created.push(createEntity(entity, item.data, clone));
+    }
+  }
+  for (const key of ['tasks', 'events', 'courseSlots', 'courses', 'semesters', 'drafts']) {
+    store[key] = clone[key];
+  }
+  const target = store.drafts.find((item) => item.id === id);
+  if (target) {
+    target.status = 'applied';
+    target.appliedAt = nowIso();
+  }
+  return { draft: target, created };
+}
+function discardDraft(store, id) {
+  const draft = store.drafts.find((item) => item.id === id);
+  if (!draft) throw new HttpError(404, '这个草稿已经不存在。');
+  draft.status = 'discarded';
+  draft.discardedAt = nowIso();
+  return draft;
+}
+
+/* Digest ------------------------------------------------------------------ */
+const CAMPUS = { lat: 31.2989, lon: 121.5033, label: '邯郸校区' };
+let weatherCache = { at: 0, value: null };
+
+function shiftDateKey(dateKey, days) {
+  const value = new Date(`${dateKey}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+function dateKeyOf(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return new Date(date.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+function semesterOf(store) {
+  const active = store.semesters.filter((item) => !item.archivedAt);
+  if (!active.length) return null;
+  return active.find((item) => item.isActive) ?? active[active.length - 1];
+}
+function sessionsOn(store, dateKey) {
+  const semester = semesterOf(store);
+  if (!semester) return [];
+  const start = Date.parse(`${semester.startDate}T00:00:00Z`);
+  const day = Date.parse(`${dateKey}T00:00:00Z`);
+  const week = Math.floor((day - start) / 86_400_000 / 7) + 1;
+  if (week < 1 || week > semester.weekCount) return [];
+  const weekday = new Date(day).getUTCDay() || 7;
+  const courses = new Map(
+    store.courses
+      .filter((course) => !course.archivedAt && course.semesterId === semester.id)
+      .map((course) => [course.id, course]),
+  );
+  const periods = store.settings.periodTimes;
+  return store.courseSlots
+    .filter((slot) => !slot.archivedAt && slot.weekday === weekday && slot.weeks.includes(week) && courses.has(slot.courseId))
+    .map((slot) => {
+      const course = courses.get(slot.courseId);
+      return {
+        name: course.name,
+        teacher: course.teacher,
+        location: slot.location,
+        start: periods[slot.startPeriod - 1]?.start ?? '',
+        end: periods[slot.endPeriod - 1]?.end ?? '',
+      };
+    })
+    .sort((left, right) => left.start.localeCompare(right.start));
+}
+function statsFor(store, dateKey) {
+  const courses = sessionsOn(store, dateKey);
+  const due = store.tasks.filter((task) => !task.archivedAt && task.dueDate === dateKey);
+  const planned = store.tasks.filter((task) => !task.archivedAt && task.plannedDate === dateKey);
+  const events = store.events
+    .filter((event) => !event.archivedAt && dateKeyOf(event.startAt) === dateKey)
+    .map((event) => ({ title: event.title, start: event.startAt, end: event.endAt }));
+  const done = store.tasks.filter(
+    (task) => !task.archivedAt && task.status === 'done' && dateKeyOf(task.updatedAt) === dateKey,
+  );
+  return { dateKey, courses, due, planned, events, done };
+}
+function upcomingDeadlines(store, dateKey, days = 3) {
+  const limit = shiftDateKey(dateKey, days);
+  return store.tasks
+    .filter((task) => !task.archivedAt && task.status !== 'done' && task.dueDate && task.dueDate >= dateKey && task.dueDate <= limit)
+    .sort((left, right) => String(left.dueDate).localeCompare(String(right.dueDate)));
+}
+async function fetchWeather() {
+  if (Date.now() - weatherCache.at < 30 * 60_000) return weatherCache.value;
+  try {
+    const url = new URL('https://api.open-meteo.com/v1/forecast');
+    url.searchParams.set('latitude', String(CAMPUS.lat));
+    url.searchParams.set('longitude', String(CAMPUS.lon));
+    url.searchParams.set('daily', 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max');
+    url.searchParams.set('current', 'temperature_2m,weather_code');
+    url.searchParams.set('timezone', 'Asia/Shanghai');
+    url.searchParams.set('forecast_days', '2');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) throw new Error('weather');
+    const data = await response.json();
+    const value = {
+      current: data.current ?? null,
+      daily: data.daily ?? null,
+      label: CAMPUS.label,
+    };
+    weatherCache = { at: Date.now(), value };
+    return value;
+  } catch {
+    weatherCache = { at: Date.now(), value: null };
+    return null;
+  }
+}
+function describeWeather(weather, index) {
+  if (!weather?.daily?.time?.length) return '';
+  const at = weather.daily.time.indexOf(index) >= 0 ? weather.daily.time.indexOf(index) : 0;
+  const code = weather.daily.weather_code?.[at];
+  const high = weather.daily.temperature_2m_max?.[at];
+  const low = weather.daily.temperature_2m_min?.[at];
+  const rain = weather.daily.precipitation_probability_max?.[at];
+  const names = {
+    0: '晴', 1: '晴间多云', 2: '多云', 3: '阴', 45: '雾', 48: '雾凇',
+    51: '小毛毛雨', 53: '毛毛雨', 55: '大毛毛雨', 61: '小雨', 63: '中雨', 65: '大雨',
+    71: '小雪', 73: '中雪', 75: '大雪', 80: '阵雨', 81: '强阵雨', 82: '暴雨', 95: '雷雨',
+  };
+  const parts = [];
+  if (names[code]) parts.push(names[code]);
+  if (Number.isFinite(high) && Number.isFinite(low)) parts.push(`${Math.round(low)}–${Math.round(high)}°C`);
+  if (Number.isFinite(rain) && rain >= 40) parts.push(`降水概率 ${Math.round(rain)}%`);
+  return parts.join('，');
+}
+function digestPrompt(context) {
+  return [
+    '你是复旦大学学生的日程助手。请根据下面的结构化数据，写一份精简的"昨日回顾 + 今日安排"简报。',
+    '要求：中文；不超过 220 字；不要编造数据里没有的事实；天气只写对出行有影响的部分；',
+    '语气自然，像同学提醒，不要用"亲""宝子"等称呼，不要罗列全部条目，只挑最重要的。',
+    '只输出 JSON，不要 Markdown 代码块，格式：',
+    '{"headline":"一句话标题","sections":[{"title":"小标题","body":"一两句"}],"nudge":"一句话建议"}',
+    '',
+    JSON.stringify(context, null, 2),
+  ].join('\n');
+}
+function parseDigest(textValue) {
+  if (!textValue) return null;
+  const raw = String(textValue).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1));
+    const headline = text(parsed.headline).slice(0, 80);
+    const sections = (Array.isArray(parsed.sections) ? parsed.sections : [])
+      .map((item) => ({ title: text(item?.title).slice(0, 20), body: text(item?.body).slice(0, 400) }))
+      .filter((item) => item.title || item.body)
+      .slice(0, 4);
+    if (!headline && !sections.length) return null;
+    return { headline, sections, nudge: text(parsed.nudge).slice(0, 120) };
+  } catch {
+    return null;
+  }
+}
+function templateDigest(context) {
+  const { today, yesterday, deadlines, weather } = context;
+  const sections = [];
+  const doneCount = yesterday.done.length;
+  const openCount = yesterday.due.filter((task) => task.status !== 'done').length;
+  sections.push({
+    title: '昨日',
+    body: doneCount || openCount
+      ? `完成 ${doneCount} 项${openCount ? `，还有 ${openCount} 项没做完` : ''}。`
+      : '昨天没有留下任务记录。',
+  });
+  if (today.courses.length) {
+    sections.push({
+      title: '今日课程',
+      body: today.courses.map((course) => `${course.start} ${course.name}${course.location ? `（${course.location}）` : ''}`).join('；'),
+    });
+  }
+  const tasks = today.tasks.filter((task) => task.status !== 'done');
+  if (tasks.length) {
+    sections.push({ title: '今日要做', body: tasks.slice(0, 5).map((task) => task.title).join('、') });
+  }
+  if (deadlines.length) {
+    sections.push({ title: 'DDL', body: deadlines.slice(0, 4).map((task) => `${task.dueDate} ${task.title}`).join('；') });
+  }
+  if (weather) sections.push({ title: '天气', body: weather });
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][
+    new Date(`${today.dateKey}T00:00:00Z`).getUTCDay()
+  ];
+  const nudge = weather.includes('雨')
+    ? '出门带伞，路上多留十分钟。'
+    : tasks.length >= 3
+      ? '今天事情不少，先挑一件最重要的做完。'
+      : '';
+  return {
+    headline: `${weekday} · ${tasks.length ? `${tasks.length} 件要做的事` : '没有硬性安排'}`,
+    sections,
+    nudge,
+  };
+}
+async function generateDigest(store, options = {}) {
+  const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(options.date ?? '')) ? options.date : todayKey();
+  const today = statsFor(store, dateKey);
+  const yesterday = statsFor(store, shiftDateKey(dateKey, -1));
+  const tomorrow = statsFor(store, shiftDateKey(dateKey, 1));
+  const deadlines = upcomingDeadlines(store, dateKey, 3);
+  const weather = await fetchWeather();
+  const openToday = [...today.due, ...today.planned].filter(
+    (task, index, list) => list.findIndex((item) => item.id === task.id) === index,
+  );
+  const context = {
+    today: { dateKey, courses: today.courses, tasks: openToday },
+    yesterday: { done: yesterday.done.map((task) => ({ title: task.title, projectId: task.projectId })), due: yesterday.due },
+    tomorrow: { courses: tomorrow.courses, tasks: tomorrow.due },
+    deadlines,
+    weather: describeWeather(weather, dateKey),
+  };
+  let generated = null;
+  let source = 'template';
+  if (llmRunner && store.settings.ai?.enabled !== false) {
+    try {
+      const raw = await llmRunner({ prompt: digestPrompt(context), system: '你是日程助手，只输出 JSON。' });
+      generated = parseDigest(raw);
+      if (generated) source = 'llm';
+    } catch (error) {
+      generated = null;
+    }
+  }
+  const body = generated ?? templateDigest(context);
+  const entry = {
+    date: dateKey,
+    createdAt: nowIso(),
+    source,
+    headline: body.headline,
+    sections: body.sections,
+    nudge: body.nudge ?? '',
+    weather: context.weather,
+    stats: {
+      courses: today.courses.length,
+      tasksOpen: today.due.filter((task) => task.status !== 'done').length + today.planned.filter((task) => task.status !== 'done').length,
+      doneYesterday: yesterday.done.length,
+      deadlines: deadlines.length,
+    },
+  };
+  store.digests = store.digests.filter((item) => item.date !== dateKey);
+  store.digests.push(entry);
+  store.digests.sort((left, right) => String(right.date).localeCompare(String(left.date)));
+  store.digests = store.digests.slice(0, MAX_DIGESTS);
+  return entry;
+}
+
+export {
+  readStore,
+  saveStore,
+  snapshot,
+  listClaims,
+  addClaim,
+  updateClaim,
+  deleteClaim,
+  createDraft,
+  listDrafts,
+  applyDraft,
+  discardDraft,
+  generateDigest,
+  statsFor,
+  sessionsOn,
+  upcomingDeadlines,
+  shiftDateKey,
+  dateKeyOf,
+};

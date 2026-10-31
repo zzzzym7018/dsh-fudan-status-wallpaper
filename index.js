@@ -23,7 +23,8 @@
  * (see PRICE_TABLE) because the public API exposes no price endpoint.
  */
 
-import { registerWorkflowRoutes } from './workflow-host.js';
+import { generateDigest, readStore, registerWorkflowRoutes, saveStore, setLlmRunner } from './workflow-host.js';
+import { registerAgentTools } from './agent-tools.js';
 
 const name = 'dsh-quota-wallpaper';
 const inject = ['credentials', 'webServer'];
@@ -401,6 +402,85 @@ function apply(ctx) {
   );
 
   registerWorkflowRoutes(ctx, bindHost);
+
+  // Model calls go through the harness LLM service, so each user's own
+  // provider and key apply; this plugin never stores a credential.
+  try {
+    ctx.inject(['llm'], (child) => {
+      child.effect(() => {
+        setLlmRunner(async ({ prompt, system }) => {
+          const ai = readStore().settings?.ai ?? {};
+          const messages = [];
+          if (system) messages.push({ role: 'system', content: [{ type: 'text', text: system }] });
+          messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] });
+          let output = '';
+          for await (const chunk of child.llm.stream({
+            provider: ai.provider || 'deepseek-official',
+            model: ai.model || 'deepseek-flash',
+            messages,
+          })) {
+            if (chunk?.kind === 'text-delta') output += chunk.text ?? chunk.delta ?? '';
+            else if (chunk?.kind === 'error' || chunk?.kind === 'aborted') {
+              throw new Error('model call failed');
+            }
+          }
+          return output;
+        });
+        return () => setLlmRunner(null);
+      });
+    });
+  } catch (error) {
+    console.warn('[dsh-workflow] llm service unavailable', error?.message ?? error);
+  }
+
+  // Nightly digest. There is no daemon: the timer only runs while DSH is
+  // open, and the first tick after start catches up a missed evening.
+  try {
+    ctx.effect(() => {
+      let running = false;
+      const tick = async () => {
+        if (running) return;
+        running = true;
+        try {
+          const store = readStore();
+          const ai = store.settings?.ai ?? {};
+          if (ai.enabled === false) return;
+          const beijing = new Date(Date.now() + 8 * 3600_000);
+          const dateKey = beijing.toISOString().slice(0, 10);
+          const weekday = beijing.getUTCDay() || 7;
+          if (Array.isArray(ai.digestDays) && !ai.digestDays.includes(weekday)) return;
+          if (store.digests?.some((digest) => digest.date === dateKey)) return;
+          const [hour, minute] = String(ai.digestTime || '22:30').split(':').map(Number);
+          const nowMinutes = beijing.getUTCHours() * 60 + beijing.getUTCMinutes();
+          if (nowMinutes < hour * 60 + minute) return;
+          const entry = await generateDigest(store, { date: dateKey });
+          saveStore(store);
+          console.log(`[dsh-workflow] digest ready for ${entry.date} (${entry.source})`);
+        } catch (error) {
+          console.warn('[dsh-workflow] digest failed', error?.message ?? error);
+        } finally {
+          running = false;
+        }
+      };
+      const timer = setInterval(tick, 60_000);
+      void tick();
+      return () => clearInterval(timer);
+    }, 'dsh-quota-wallpaper: nightly digest');
+  } catch (error) {
+    console.warn('[dsh-workflow] digest scheduler unavailable', error?.message ?? error);
+  }
+
+  // Agent tools: natural language -> 知行台 drafts, profile, digest.
+  try {
+    ctx.inject(['tools'], (child) => {
+      child.effect(() => {
+        registerAgentTools(child);
+        return () => {};
+      });
+    });
+  } catch (error) {
+    console.warn('[dsh-workflow] tool registry unavailable', error?.message ?? error);
+  }
 }
 
 export { name, inject, apply };

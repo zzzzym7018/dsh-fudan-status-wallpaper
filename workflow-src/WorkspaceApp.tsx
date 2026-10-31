@@ -131,12 +131,60 @@ type Snapshot = {
   knowledgeNotes: KnowledgeNote[];
   ideas: Idea[];
   events: CalendarEvent[];
+  drafts: Draft[];
+  digest: Digest | null;
   viewer: Viewer;
+};
+type Claim = {
+  id: string;
+  text: string;
+  kind: "fact" | "preference" | "habit" | "constraint";
+  source: "user" | "derived" | "import";
+  status: "new" | "active" | "retired";
+  confidence: number;
+  confirmations: number;
+  evidence: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastConfirmedAt: string | null;
 };
 type Profile = {
   nickname: string;
   school: string;
-  claims: unknown[];
+  claims: Claim[];
+};
+type DraftItem = {
+  kind: "task" | "event" | "courseSlot";
+  op: "create" | "update" | "delete";
+  id?: string;
+  data: Record<string, unknown>;
+};
+type Draft = {
+  id: string;
+  createdAt: string;
+  status: string;
+  source: "agent" | "ui";
+  reason: string;
+  items: DraftItem[];
+};
+type DigestSection = { title: string; body: string };
+type Digest = {
+  date: string;
+  createdAt: string;
+  source: "llm" | "template";
+  headline: string;
+  sections: DigestSection[];
+  nudge: string;
+  weather: string;
+  stats: Record<string, number>;
+};
+type AiSettings = {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  digestTime: string;
+  digestDays: number[];
+  autoProfile: boolean;
 };
 type CoursePeriod = { index: number; start: string; end: string };
 type ReminderSettings = {
@@ -145,7 +193,11 @@ type ReminderSettings = {
   digestTime: string;
   leadHours: number[];
 };
-type Settings = { periodTimes: CoursePeriod[]; reminders: ReminderSettings };
+type Settings = {
+  periodTimes: CoursePeriod[];
+  reminders: ReminderSettings;
+  ai: AiSettings;
+};
 type Semester = {
   id: string;
   name: string;
@@ -335,6 +387,9 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     draft: EditorDraft;
   } | null>(null);
   const [icsPlan, setIcsPlan] = useState<IcsPlan | null>(null);
+  const [digestRunning, setDigestRunning] = useState(false);
+  const [openDraftId, setOpenDraftId] = useState<string | null>(null);
+  const [draftBusy, setDraftBusy] = useState(false);
   const [icsImporting, setIcsImporting] = useState(false);
   const [icsClearDemo, setIcsClearDemo] = useState(false);
   const [courseError, setCourseError] = useState("");
@@ -864,6 +919,112 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     }
   }
 
+  async function saveAi(patch: Partial<AiSettings>) {
+    try {
+      const response = await fetch("/api/dsh-workflow/settings/ai", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      notify("AI 设置已保存");
+    } catch {
+      notify("AI 设置未保存", "error");
+    }
+  }
+
+  async function runDigest() {
+    setDigestRunning(true);
+    try {
+      const response = await fetch("/api/dsh-workflow/digest/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const result = (await response.json()) as { digest?: Digest; error?: string };
+      if (!response.ok) throw new Error(result.error || "生成失败。");
+      await loadWorkspace();
+      notify(
+        result.digest?.source === "llm" ? "简报已生成" : "简报已生成（本地模板）",
+        "success",
+      );
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "生成失败，请重试", "error");
+    } finally {
+      setDigestRunning(false);
+    }
+  }
+
+  async function resolveDraft(id: string, action: "apply" | "discard") {
+    setDraftBusy(true);
+    try {
+      const response = await fetch(`/api/dsh-workflow/drafts/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const result = (await response.json()) as { created?: unknown[]; error?: string };
+      if (!response.ok) throw new Error(result.error || "处理失败。");
+      await loadWorkspace();
+      setOpenDraftId(null);
+      notify(
+        action === "apply"
+          ? `已写入 ${result.created?.length ?? 0} 条改动`
+          : "已放弃这批改动",
+        action === "apply" ? "success" : "warning",
+      );
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "处理失败，请重试", "error");
+    } finally {
+      setDraftBusy(false);
+    }
+  }
+
+  async function writeClaim(text: string, kind: Claim["kind"]) {
+    try {
+      const response = await fetch("/api/dsh-workflow/claims", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, kind, source: "user" }),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      notify("已加入画像");
+    } catch {
+      notify("未能保存这条画像", "error");
+    }
+  }
+
+  async function touchClaim(id: string, patch: Record<string, unknown>) {
+    try {
+      const response = await fetch("/api/dsh-workflow/claims", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, ...patch }),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+    } catch {
+      notify("未能更新画像", "error");
+    }
+  }
+
+  async function removeClaim(id: string) {
+    try {
+      const response = await fetch("/api/dsh-workflow/claims", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!response.ok) throw new Error();
+      await loadWorkspace();
+      notify("已删除", "warning");
+    } catch {
+      notify("未能删除", "error");
+    }
+  }
+
   async function saveSemester(semester: Semester, patch: Record<string, unknown>) {
     await updateItem("semester", semester.id, patch, "学期已更新");
   }
@@ -1071,6 +1232,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     [deadlines, todayKey],
   );
   const reminderCount = todaySessions.length + dueSoon.length;
+  const openDraft = snapshot?.drafts.find((draft) => draft.id === openDraftId) ?? null;
 
   useReminderEngine({
     snapshot,
@@ -1263,6 +1425,11 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                   onOpenCourse={(session) =>
                     openCourseEditor({}, { id: session.slotId, courseId: session.courseId })
                   }
+                  digest={snapshot.digest}
+                  drafts={snapshot.drafts}
+                  digestRunning={digestRunning}
+                  onRunDigest={runDigest}
+                  onOpenDraft={setOpenDraftId}
                   onToggleTask={(task) =>
                     updateItem(
                       "task",
@@ -1456,6 +1623,10 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                   onCreateSemester={createSemester}
                   onLoadDemo={loadDemoTimetable}
                   onReset={resetStore}
+                  onSaveAi={saveAi}
+                  onAddClaim={writeClaim}
+                  onConfirmClaim={(id) => touchClaim(id, { confirm: true })}
+                  onDeleteClaim={removeClaim}
                 />
               ) : null}
             </>
@@ -1482,6 +1653,15 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
         })}
       </nav>
 
+      {openDraft ? (
+        <DraftDialog
+          draft={openDraft}
+          busy={draftBusy}
+          onApply={() => resolveDraft(openDraft.id, "apply")}
+          onDiscard={() => resolveDraft(openDraft.id, "discard")}
+          onClose={() => setOpenDraftId(null)}
+        />
+      ) : null}
       {icsPlan ? (
         <IcsImportDialog
           plan={icsPlan}
@@ -1716,6 +1896,11 @@ function TodayView({
   onEditEvent,
   onDeleteTask,
   onOpenCourse,
+  digest,
+  drafts,
+  digestRunning,
+  onRunDigest,
+  onOpenDraft,
 }: {
   snapshot: Snapshot;
   todayEvents: CalendarEvent[];
@@ -1731,6 +1916,11 @@ function TodayView({
   onEditEvent: (event: CalendarEvent) => void;
   onDeleteTask: (task: Task) => void;
   onOpenCourse: (session: CourseSession) => void;
+  digest: Digest | null;
+  drafts: Draft[];
+  digestRunning: boolean;
+  onRunDigest: () => void;
+  onOpenDraft: (id: string) => void;
 }) {
   const now = useCurrentTime();
   const nowMinute = shanghaiClockMinutes(new Date(now));
@@ -1807,6 +1997,56 @@ function TodayView({
       </section>
       <div className="today-layout">
       <section className="today-primary">
+        {drafts.length ? (
+          <section className="panel draft-banner" aria-label="待确认的改动">
+            <div>
+              <p className="eyebrow">PENDING · 待确认</p>
+              <strong>{drafts.length} 批改动等你确认</strong>
+              <span>{drafts[0].reason || "来自 agent 的日程建议"}</span>
+            </div>
+            <button
+              className="button button--primary"
+              type="button"
+              onClick={() => onOpenDraft(drafts[0].id)}
+            >
+              查看并确认
+            </button>
+          </section>
+        ) : null}
+        <section className="panel digest-card" aria-label="今日简报">
+          <div className="digest-head">
+            <div>
+              <p className="eyebrow">
+                DAILY BRIEF
+                {digest ? ` · ${digest.source === "llm" ? "模型生成" : "本地模板"}` : ""}
+              </p>
+              <h2>{digest?.headline || "今天的简报还没生成"}</h2>
+            </div>
+            <button
+              className="text-button"
+              type="button"
+              onClick={onRunDigest}
+              disabled={digestRunning}
+            >
+              {digestRunning ? "生成中…" : digest ? "重新生成" : "生成简报"}
+            </button>
+          </div>
+          {digest ? (
+            <div className="digest-body">
+              {digest.sections.map((section) => (
+                <div className="digest-section" key={`${section.title}-${section.body.slice(0, 8)}`}>
+                  <strong>{section.title}</strong>
+                  <p>{section.body}</p>
+                </div>
+              ))}
+              {digest.nudge ? <p className="digest-nudge">{digest.nudge}</p> : null}
+            </div>
+          ) : (
+            <p className="digest-empty">
+              昨日完成、今日任务与课程、DDL 和天气会汇总成一段话；晚上会自动生成，也可以现在手动跑一次。
+            </p>
+          )}
+        </section>
         <div className={`current-slot-card ${currentSlot ? "is-active" : ""}`}>
           <div className="current-slot-accent" aria-hidden="true" />
           <div>
@@ -2785,6 +3025,105 @@ function TimetableView({
           </label>
         </div>
       </section>
+    </div>
+  );
+}
+
+function claimKindLabel(kind: Claim["kind"]) {
+  return kind === "fact" ? "事实" : kind === "preference" ? "偏好" : kind === "habit" ? "习惯" : "约束";
+}
+
+function draftKindLabel(kind: DraftItem["kind"]) {
+  return kind === "task" ? "任务" : kind === "event" ? "日程" : "课程";
+}
+function draftItemTitle(item: DraftItem) {
+  const data = item.data ?? {};
+  return String(data.title ?? data.courseName ?? "未命名");
+}
+function draftItemWhen(item: DraftItem) {
+  const data = item.data ?? {};
+  if (item.kind === "event" && data.startAt) {
+    return `${formatMonthDay(String(data.startAt))} ${formatTime(String(data.startAt))}–${formatTime(String(data.endAt ?? data.startAt))}`;
+  }
+  if (item.kind === "task") {
+    const parts = [];
+    if (data.plannedDate) parts.push(`行动日 ${formatShortDate(String(data.plannedDate))}`);
+    if (data.dueDate) parts.push(`DDL ${formatShortDate(String(data.dueDate))}`);
+    return parts.join(" · ") || "没有日期";
+  }
+  if (item.kind === "courseSlot") {
+    const weekday = Number(data.weekday) || 1;
+    const start = Number(data.startPeriod) || 1;
+    const end = Number(data.endPeriod) || start;
+    return `周${weekdayLabels[weekday - 1]} 第 ${start}${end > start ? `–${end}` : ""} 节`;
+  }
+  return "";
+}
+
+function DraftDialog({
+  draft,
+  busy,
+  onApply,
+  onDiscard,
+  onClose,
+}: {
+  draft: Draft;
+  busy: boolean;
+  onApply: () => void;
+  onDiscard: () => void;
+  onClose: () => void;
+}) {
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, titleRef, onClose, !busy);
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target && !busy) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="editor-dialog draft-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="draft-title"
+      >
+        <header>
+          <div>
+            <p className="eyebrow">AGENT DRAFT · 待确认</p>
+            <h2 id="draft-title" ref={titleRef} tabIndex={-1}>
+              确认这批改动
+            </h2>
+          </div>
+          <button className="icon-button" type="button" aria-label="关闭" onClick={onClose} disabled={busy}>
+            ×
+          </button>
+        </header>
+        {draft.reason ? <p className="draft-reason">{draft.reason}</p> : null}
+        <ul className="draft-list">
+          {draft.items.map((item, index) => (
+            <li key={`${item.kind}-${item.op}-${index}`}>
+              <span className={`draft-kind draft-kind--${item.kind}`}>
+                {draftKindLabel(item.kind)}
+              </span>
+              <span className="draft-main">
+                <strong>{draftItemTitle(item)}</strong>
+                <small>{item.op === "delete" ? "删除" : item.op === "update" ? "修改" : draftItemWhen(item)}</small>
+              </span>
+            </li>
+          ))}
+        </ul>
+        <footer>
+          <button className="button button--outline" type="button" onClick={onDiscard} disabled={busy}>
+            放弃
+          </button>
+          <button className="button button--primary" type="button" onClick={onApply} disabled={busy}>
+            {busy ? "正在写入…" : `确认写入 ${draft.items.length} 条`}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -4841,6 +5180,10 @@ function SettingsView({
   onCreateSemester,
   onLoadDemo,
   onReset,
+  onSaveAi,
+  onAddClaim,
+  onConfirmClaim,
+  onDeleteClaim,
 }: {
   viewer: Viewer;
   profile: Profile | undefined;
@@ -4862,6 +5205,10 @@ function SettingsView({
   onCreateSemester: () => Promise<void>;
   onLoadDemo: () => Promise<void>;
   onReset: (mode: "empty" | "demo") => Promise<void>;
+  onSaveAi: (patch: Partial<AiSettings>) => Promise<void>;
+  onAddClaim: (text: string, kind: Claim["kind"]) => Promise<void>;
+  onConfirmClaim: (id: string) => Promise<void>;
+  onDeleteClaim: (id: string) => Promise<void>;
 }) {
   const [updating, setUpdating] = useState("");
   const [nickname, setNickname] = useState(profile?.nickname ?? "FDUer");
@@ -4871,6 +5218,10 @@ function SettingsView({
     semester?.startDate ?? mondayKeyOf(localDateKey(new Date())),
   );
   const [semesterWeeks, setSemesterWeeks] = useState(String(semester?.weekCount ?? 16));
+  const [claimText, setClaimText] = useState("");
+  const [claimKind, setClaimKind] = useState<Claim["kind"]>("preference");
+  const [aiModel, setAiModel] = useState(settings?.ai?.model ?? "deepseek-flash");
+  const [aiTime, setAiTime] = useState(settings?.ai?.digestTime ?? "22:30");
   useEffect(() => {
     setNickname(profile?.nickname ?? "FDUer");
   }, [profile?.nickname]);
@@ -4945,11 +5296,11 @@ function SettingsView({
               像
             </span>
             <div>
-              <h3>个人画像</h3>
-              <p>默认是空的，只保留一个 FDUer 身份。</p>
+              <h3>个人身份</h3>
+              <p>只影响界面里怎么称呼你。</p>
             </div>
           </div>
-          <span className="connection-status">{profile?.claims?.length ? "已积累" : "空白"}</span>
+          <span className="connection-status">{profile?.nickname || "FDUer"}</span>
         </div>
         <div className="settings-inline-form">
           <label className="settings-inline-field">
@@ -4971,7 +5322,7 @@ function SettingsView({
           </button>
         </div>
         <p className="settings-copy">
-          画像本身还没有开始记录：目前只有「称呼」这一项身份信息。之后的作息、偏好、擅长科目会作为可编辑的声明加在这里，每一条都带来源和时效，可以随时否认。
+          称呼只用于界面显示。长期记忆（作息、偏好、习惯、约束）在下面的「个人画像」里维护，每一条都带来源和时效，可以随时确认或删除。
         </p>
       </section>
       <section className="panel settings-panel settings-panel--semester">
@@ -5158,6 +5509,134 @@ function SettingsView({
             >
               申请权限
             </button>
+          </div>
+        </div>
+      </section>
+      <section className="panel settings-panel settings-panel--claims">
+        <div className="settings-heading">
+          <div>
+            <span className="settings-icon" aria-hidden="true">
+              像
+            </span>
+            <div>
+              <h3>个人画像</h3>
+              <p>{profile?.claims?.length ?? 0} 条长期记忆，agent 排日程时会先看这里。</p>
+            </div>
+          </div>
+          <span className="connection-status">
+            {(profile?.claims ?? []).filter((claim) => claim.status === "active").length} 条已确认
+          </span>
+        </div>
+        <form
+          className="claim-form"
+          noValidate
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!claimText.trim()) return;
+            void onAddClaim(claimText.trim(), claimKind).then(() => setClaimText(""));
+          }}
+        >
+          <input
+            value={claimText}
+            maxLength={120}
+            placeholder="例如：晚上十点后写代码效率更高"
+            onChange={(event) => setClaimText(event.target.value)}
+            aria-label="新增画像"
+          />
+          <select
+            value={claimKind}
+            onChange={(event) => setClaimKind(event.target.value as Claim["kind"])}
+            aria-label="画像类型"
+          >
+            <option value="fact">事实</option>
+            <option value="preference">偏好</option>
+            <option value="habit">习惯</option>
+            <option value="constraint">约束</option>
+          </select>
+          <button className="button button--outline" type="submit" disabled={!claimText.trim()}>
+            添加
+          </button>
+        </form>
+        {(profile?.claims ?? []).length ? (
+          <ul className="claim-list">
+            {(profile?.claims ?? []).map((claim) => (
+              <li key={claim.id}>
+                <span className={`claim-kind claim-kind--${claim.kind}`}>{claimKindLabel(claim.kind)}</span>
+                <span className="claim-text">{claim.text}</span>
+                <span className={`claim-status ${claim.status === "active" ? "is-active" : ""}`}>
+                  {claim.status === "active" ? "已确认" : "待确认"}
+                </span>
+                {claim.status !== "active" ? (
+                  <button className="text-button" type="button" onClick={() => onConfirmClaim(claim.id)}>
+                    确认
+                  </button>
+                ) : null}
+                <button
+                  className="row-action row-action--delete"
+                  type="button"
+                  aria-label={`删除画像 ${claim.text}`}
+                  onClick={() => onDeleteClaim(claim.id)}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="settings-copy">
+            还没有画像。夜里总结时会自动提取习惯类条目，等你确认三次后转正；事实类必须你手动确认。
+          </p>
+        )}
+      </section>
+      <section className="panel settings-panel settings-panel--ai">
+        <div className="settings-heading">
+          <div>
+            <span className="settings-icon" aria-hidden="true">
+              AI
+            </span>
+            <div>
+              <h3>每日简报</h3>
+              <p>用你自己的模型额度生成；key 走 DSH 里配置的 provider，不存在插件里。</p>
+            </div>
+          </div>
+          <button
+            className={`switch ${settings?.ai?.enabled ? "is-on" : ""}`}
+            type="button"
+            role="switch"
+            aria-checked={Boolean(settings?.ai?.enabled)}
+            aria-label="启用每日简报"
+            onClick={() => onSaveAi({ enabled: !settings?.ai?.enabled })}
+          >
+            <span />
+          </button>
+        </div>
+        <div className="reminder-settings">
+          <div className="reminder-setting">
+            <span>
+              <strong>模型</strong>
+              <small>摘要用 flash 就够；换 pro 会更慢更贵。</small>
+            </span>
+            <select
+              value={aiModel}
+              onChange={(event) => setAiModel(event.target.value)}
+              onBlur={() => aiModel !== settings?.ai?.model && onSaveAi({ model: aiModel })}
+              aria-label="简报模型"
+            >
+              <option value="deepseek-flash">deepseek-flash</option>
+              <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+            </select>
+          </div>
+          <div className="reminder-setting reminder-setting--time">
+            <span>
+              <strong>生成时间</strong>
+              <small>DSH 开着才会跑；错过会在下次启动时补一次。</small>
+            </span>
+            <input
+              type="time"
+              value={aiTime}
+              onChange={(event) => setAiTime(event.target.value)}
+              onBlur={() => /^\d{2}:\d{2}$/.test(aiTime) && aiTime !== settings?.ai?.digestTime && onSaveAi({ digestTime: aiTime })}
+            />
           </div>
         </div>
       </section>
