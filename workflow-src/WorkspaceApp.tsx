@@ -954,6 +954,9 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
       remembered?: string[];
       error?: string;
     };
+    if (response.status === 404) {
+      throw new Error("对话需要重启 DSH 才能启用：宿主路由是随启动注册的，⌘Q 后重开即可。");
+    }
     if (!response.ok) throw new Error(result.error || "发送失败，请重试。");
     await loadWorkspace();
     return result;
