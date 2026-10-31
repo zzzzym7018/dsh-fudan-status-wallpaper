@@ -903,6 +903,13 @@ async function handleWorkspace(req, res, pathname) {
     return sendJson(res, 405, { error: '不支持的方法。' });
   }
 
+  if (pathname === `${PREFIX}/chat` && req.method === 'POST') {
+    const body = await readBody(req);
+    const store = readStore();
+    const result = await chat(store, { message: body.message, history: body.history });
+    saveStore(store);
+    return sendJson(res, 200, result);
+  }
   if (pathname === `${PREFIX}/profile/rebuild` && req.method === 'POST') {
     const body = await readBody(req);
     const store = readStore();
@@ -1595,6 +1602,7 @@ export {
   applyDraft,
   discardDraft,
   generateDigest,
+  chat,
   rebuildProfile,
   rebuildContext,
   statsFor,
@@ -1767,5 +1775,155 @@ async function rebuildProfile(store, options = {}) {
     retired,
     days,
     claims: added.map((claim) => ({ id: claim.id, text: claim.text, kind: claim.kind, status: claim.status })),
+  };
+}
+
+/* In-app chat --------------------------------------------------------------
+ * A thin agent loop without native function calling: the model answers with
+ * JSON (reply + actions), and actions become a draft. Same safety rule as the
+ * tools — nothing is written before the user confirms.
+ */
+const CHAT_ACTION_KINDS = new Set(['create_task', 'create_event', 'update_task', 'remember']);
+
+function chatContext(store) {
+  const today = statsFor(store, todayKey());
+  const activeClaims = store.profile.claims
+    .filter((claim) => claim.status !== 'retired')
+    .slice(0, 12)
+    .map((claim) => claim.text);
+  return {
+    today: todayKey(),
+    courses: today.courses.map((course) => `${course.start} ${course.name}${course.location ? `（${course.location}）` : ''}`),
+    openTasks: today.due.filter((task) => task.status !== 'done').slice(0, 8).map((task) => ({
+      id: task.id, title: task.title, dueDate: task.dueDate,
+    })),
+    deadlines: upcomingDeadlines(store, todayKey(), 5).slice(0, 6).map((task) => ({ id: task.id, title: task.title, dueDate: task.dueDate })),
+    profile: {
+      summary: store.profile.summary || '',
+      claims: activeClaims,
+    },
+  };
+}
+
+function chatPrompt(context, history, message) {
+  return [
+    '你在「知行台」里帮一个复旦学生安排日程、回答关于他日程的问题。',
+    '你可以用中文自然回答；如果需要改数据，不要直接改，而是给出 actions，由界面让用户确认。',
+    '可用 action：',
+    '- create_task: {title, plannedDate?, dueDate?, notes?}（YYYY-MM-DD）',
+    '- create_event: {title, startAt, endAt}（ISO，必须带 +08:00）',
+    '- update_task: {id, status?, dueDate?}',
+    '- remember: {text, kind}（kind: fact/preference/habit/constraint，仅在用户明确说“记住”时）',
+    '今天和用户画像如下；回答要短，不要编造数据里没有的课或任务。',
+    JSON.stringify(context, null, 2),
+    '',
+    '最近的对话：',
+    ...history.slice(-6).map((item) => `${item.role === 'user' ? '用户' : '你'}：${String(item.text ?? '').slice(0, 200)}`),
+    '',
+    `用户刚刚说：${message}`,
+    '',
+    '只输出 JSON，不要 Markdown：',
+    '{"reply":"给用户看的中文回复","actions":[{"type":"create_event","data":{...}}]}',
+    '没有动作就给空数组。',
+  ].join('\n');
+}
+
+function parseChat(raw) {
+  const value = String(raw ?? '').trim();
+  const start = value.indexOf('{');
+  const end = value.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try {
+      const parsed = JSON.parse(value.slice(start, end + 1));
+      const reply = text(parsed.reply ?? parsed.message ?? parsed['回复']);
+      const actions = (Array.isArray(parsed.actions) ? parsed.actions : [])
+        .map((item) => ({
+          type: text(item?.type),
+          data: item?.data && typeof item.data === 'object' ? item.data : {},
+        }))
+        .filter((item) => CHAT_ACTION_KINDS.has(item.type))
+        .slice(0, 8);
+      if (reply || actions.length) return { reply: reply || '好的。', actions };
+    } catch {
+      /* fall through */
+    }
+  }
+  const prose = value.replace(/```[a-z]*/gi, '').replace(/```/g, '').trim();
+  return prose ? { reply: prose.slice(0, 1200), actions: [] } : null;
+}
+
+function chatActionToDraftItem(action) {
+  const data = action.data ?? {};
+  if (action.type === 'create_task') {
+    return {
+      kind: 'task',
+      op: 'create',
+      data: {
+        title: data.title,
+        plannedDate: text(data.plannedDate) || null,
+        dueDate: text(data.dueDate) || null,
+        notes: text(data.notes),
+      },
+    };
+  }
+  if (action.type === 'create_event') {
+    const start = new Date(String(data.startAt ?? ''));
+    const end = new Date(String(data.endAt ?? ''));
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
+    return {
+      kind: 'event',
+      op: 'create',
+      data: { title: data.title, startAt: start.toISOString(), endAt: end.toISOString(), notes: text(data.notes) },
+    };
+  }
+  if (action.type === 'update_task') {
+    if (!text(data.id)) return null;
+    return {
+      kind: 'task',
+      op: 'update',
+      id: text(data.id),
+      data: {
+        ...(data.status ? { status: data.status } : {}),
+        ...(data.dueDate ? { dueDate: data.dueDate } : {}),
+        ...(data.plannedDate ? { plannedDate: data.plannedDate } : {}),
+      },
+    };
+  }
+  return null;
+}
+
+async function chat(store, { message, history }) {
+  const prompt = text(message).slice(0, 2000);
+  if (!prompt) throw new HttpError(400, '说点什么再发。');
+  if (!llmRunner) throw new HttpError(503, '对话需要模型：当前没有可用的 LLM 服务。');
+  const context = chatContext(store);
+  let parsed = null;
+  for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
+    const raw = await llmRunner({
+      prompt: attempt === 0
+        ? chatPrompt(context, Array.isArray(history) ? history : [], prompt)
+        : `${chatPrompt(context, Array.isArray(history) ? history : [], prompt)}\n\n上一次没有按 JSON 回复，请只输出 JSON。`,
+      system: '你在知行台里做日程助理，只输出 JSON。',
+    });
+    recordUsage(store, takeLlmUsage());
+    parsed = parseChat(raw);
+  }
+  if (!parsed) throw new HttpError(502, '模型没有给出可用的回复，请重试。');
+  const items = parsed.actions.map(chatActionToDraftItem).filter(Boolean);
+  const remember = parsed.actions.filter((action) => action.type === 'remember' && text(action.data?.text));
+  for (const action of remember) {
+    addClaim(store, {
+      text: action.data.text,
+      kind: ['fact', 'preference', 'habit', 'constraint'].includes(action.data.kind) ? action.data.kind : 'preference',
+      source: 'user',
+    });
+  }
+  const draft = items.length
+    ? createDraft(store, { items, reason: '对话里说的改动', source: 'agent' })
+    : null;
+  return {
+    reply: parsed.reply,
+    draft,
+    remembered: remember.map((action) => text(action.data.text)),
   };
 }

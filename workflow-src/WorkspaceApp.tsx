@@ -17,6 +17,7 @@ import {
 
 type ViewKey =
   | "today"
+  | "chat"
   | "courses"
   | "calendar"
   | "projects"
@@ -314,6 +315,7 @@ const temporarilyDisabledViews = new Set<ViewKey>(["review"]);
 
 const allNavigation: Array<{ key: ViewKey; label: string; mark: string }> = [
   { key: "today", label: "今日", mark: "今" },
+  { key: "chat", label: "对话", mark: "话" },
   { key: "courses", label: "课表", mark: "课" },
   { key: "calendar", label: "日程", mark: "历" },
   { key: "projects", label: "项目", mark: "项" },
@@ -330,14 +332,15 @@ const navigation = allNavigation.filter(
 /** The five destinations a phone-sized bottom bar can hold comfortably. */
 const mobileNavigation: ViewKey[] = [
   "today",
+  "chat",
   "courses",
   "calendar",
   "projects",
-  "learning",
 ];
 
 const viewTitles: Record<ViewKey, string> = {
   today: "今日",
+  chat: "对话",
   courses: "课表",
   calendar: "日程",
   projects: "项目",
@@ -939,6 +942,23 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     }
   }
 
+  async function sendChat(message: string, history: Array<{ role: "user" | "assistant"; text: string }>) {
+    const response = await fetch("/api/dsh-workflow/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message, history }),
+    });
+    const result = (await response.json()) as {
+      reply?: string;
+      draft?: Draft | null;
+      remembered?: string[];
+      error?: string;
+    };
+    if (!response.ok) throw new Error(result.error || "发送失败，请重试。");
+    await loadWorkspace();
+    return result;
+  }
+
   async function runDigest() {
     setDigestRunning(true);
     try {
@@ -1485,6 +1505,14 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                         : "该任务将被永久删除，且无法恢复。",
                     })
                   }
+                />
+              ) : null}
+              {activeView === "chat" ? (
+                <ChatView
+                  profile={snapshot.profile}
+                  onSend={sendChat}
+                  onResolveDraft={resolveDraft}
+                  draftBusy={draftBusy}
                 />
               ) : null}
               {activeView === "courses" ? (
@@ -2671,6 +2699,199 @@ function Timeline({
         </div>
       </div>
     </section>
+  );
+}
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  draft?: Draft | null;
+  remembered?: string[];
+  failed?: boolean;
+};
+
+function ChatView({
+  profile,
+  onSend,
+  onResolveDraft,
+  draftBusy,
+}: {
+  profile: Profile;
+  onSend: (
+    message: string,
+    history: Array<{ role: "user" | "assistant"; text: string }>,
+  ) => Promise<{ reply?: string; draft?: Draft | null; remembered?: string[] }>;
+  onResolveDraft: (id: string, action: "apply" | "discard") => Promise<void>;
+  draftBusy: boolean;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [messages, sending]);
+
+  const suggestions = [
+    "今天还有什么没做完？",
+    "帮我把周三晚上空出来复习",
+    "这周有哪几个 DDL？",
+  ];
+
+  async function send(text: string) {
+    const message = text.trim();
+    if (!message || sending) return;
+    setError("");
+    const history = messages
+      .slice(-6)
+      .map((item) => ({ role: item.role, text: item.text }));
+    const mine: ChatMessage = { id: crypto.randomUUID(), role: "user", text: message };
+    setMessages((items) => [...items, mine]);
+    setInput("");
+    setSending(true);
+    try {
+      const result = await onSend(message, history);
+      setMessages((items) => [
+        ...items,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          text: result.reply || "好的。",
+          draft: result.draft ?? null,
+          remembered: result.remembered ?? [],
+        },
+      ]);
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : "发送失败，请重试。";
+      setError(detail);
+      setMessages((items) => [
+        ...items,
+        { id: crypto.randomUUID(), role: "assistant", text: detail, failed: true },
+      ]);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="chat-page page-enter">
+      <section className="page-intro page-intro--learning chat-intro">
+        <div>
+          <p className="eyebrow">ASSISTANT</p>
+          <h2>和知行台说话</h2>
+          <p>
+            它知道你的课表、任务、DDL 和画像。要改数据时会先给草稿，你确认了才写入。
+          </p>
+        </div>
+        <span className="connection-status">
+          {profile.summary ? "已读画像" : "画像为空"}
+        </span>
+      </section>
+
+      <section className="panel chat-panel">
+        <div className="chat-list" ref={listRef} aria-live="polite">
+          {messages.length === 0 ? (
+            <div className="chat-empty">
+              <p>试试这些：</p>
+              <div className="chat-suggestions">
+                {suggestions.map((item) => (
+                  <button key={item} type="button" onClick={() => void send(item)}>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            messages.map((message) => (
+              <div key={message.id} className={`chat-row chat-row--${message.role}`}>
+                <div className={`chat-bubble ${message.failed ? "is-failed" : ""}`}>
+                  <p>{message.text}</p>
+                  {message.remembered?.length ? (
+                    <p className="chat-memory-note">已记住：{message.remembered.join("、")}</p>
+                  ) : null}
+                  {message.draft ? (
+                    <div className="chat-draft">
+                      <p className="eyebrow">待确认 · {message.draft.items.length} 条改动</p>
+                      <ul>
+                        {message.draft.items.map((item, index) => (
+                          <li key={`${item.kind}-${index}`}>
+                            <span className={`draft-kind draft-kind--${item.kind}`}>
+                              {draftKindLabel(item.kind)}
+                            </span>
+                            <span>{draftItemTitle(item)}</span>
+                            <small>{draftItemWhen(item)}</small>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="chat-draft-actions">
+                        <button
+                          className="button button--outline"
+                          type="button"
+                          disabled={draftBusy}
+                          onClick={() => void onResolveDraft(message.draft!.id, "discard")}
+                        >
+                          放弃
+                        </button>
+                        <button
+                          className="button button--primary"
+                          type="button"
+                          disabled={draftBusy}
+                          onClick={() => void onResolveDraft(message.draft!.id, "apply")}
+                        >
+                          确认写入
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          )}
+          {sending ? (
+            <div className="chat-row chat-row--assistant">
+              <div className="chat-bubble chat-bubble--thinking">
+                <span className="spinner" aria-hidden="true" />
+                正在想…
+              </div>
+            </div>
+          ) : null}
+        </div>
+        {error ? (
+          <p className="chat-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <form
+          className="chat-composer"
+          noValidate
+          onSubmit={(event) => {
+            event.preventDefault();
+            void send(input);
+          }}
+        >
+          <textarea
+            value={input}
+            rows={1}
+            placeholder="比如：把周三的组会挪到晚上七点，再提醒我周五交报告"
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !(event.nativeEvent as KeyboardEvent).isComposing) {
+                event.preventDefault();
+                void send(input);
+              }
+            }}
+            aria-label="给知行台发消息"
+          />
+          <button className="button button--primary" type="submit" disabled={sending || !input.trim()}>
+            {sending ? "发送中…" : "发送"}
+          </button>
+        </form>
+      </section>
+    </div>
   );
 }
 
