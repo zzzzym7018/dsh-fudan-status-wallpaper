@@ -14,6 +14,7 @@ import {
   generateDigest,
   listClaims,
   readStore,
+  rebuildProfile,
   saveStore,
   sessionsOn,
   shiftDateKey,
@@ -352,6 +353,32 @@ export function registerAgentTools(ctx) {
         const entry = await generateDigest(store, { date: args.date });
         saveStore(store);
         return { headline: entry.headline, sections: entry.sections, source: entry.source };
+      },
+    ),
+    tool(
+      'workflow_rebuild_profile',
+      '根据最近三个月的全部记录和现有画像，重新生成画像摘要与长期词条。用户说「更新一下我的画像」时用。旧的词条只有在被新词条取代时才会退役。',
+      params({ days: { type: 'number', description: '回看天数，默认 90' } }),
+      {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          summary: { type: 'string' },
+          added: { type: 'number' },
+          retired: { type: 'number' },
+          claims: { type: 'array', items: { type: 'object' } },
+        },
+      },
+      async (args) => {
+        const store = readStore();
+        const result = await rebuildProfile(store, { days: args.days });
+        saveStore(store);
+        return {
+          summary: result.summary,
+          added: result.added,
+          retired: result.retired,
+          claims: result.claims,
+        };
       },
     ),
   ];

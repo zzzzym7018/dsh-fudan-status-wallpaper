@@ -103,7 +103,7 @@ function defaultSettings() {
   };
 }
 function emptyProfile() {
-  return { nickname: 'FDUer', school: '复旦大学', claims: [] };
+  return { nickname: 'FDUer', school: '复旦大学', claims: [], summary: '', summaryUpdatedAt: null };
 }
 function emptyStore() {
   return {
@@ -170,6 +170,7 @@ function migrateStore(store) {
   if (!store.profile || typeof store.profile !== 'object') { store.profile = emptyProfile(); changed = true; }
   else if (typeof store.profile.nickname !== 'string' || !store.profile.nickname.trim()) { store.profile.nickname = 'FDUer'; changed = true; }
   if (!Array.isArray(store.profile.claims)) { store.profile.claims = []; changed = true; }
+  if (typeof store.profile.summary !== 'string') { store.profile.summary = ''; changed = true; }
   if (!store.settings || typeof store.settings !== 'object') { store.settings = defaultSettings(); changed = true; }
   else {
     if (!Array.isArray(store.settings.periodTimes) || !store.settings.periodTimes.length) { store.settings.periodTimes = defaultSettings().periodTimes; changed = true; }
@@ -370,6 +371,8 @@ function snapshot(store) {
     profile: {
       nickname: text(store.profile?.nickname) || 'FDUer',
       school: text(store.profile?.school) || '复旦大学',
+      summary: text(store.profile?.summary),
+      summaryUpdatedAt: store.profile?.summaryUpdatedAt ?? null,
       claims: Array.isArray(store.profile?.claims) ? store.profile.claims : [],
     },
     settings: {
@@ -900,6 +903,13 @@ async function handleWorkspace(req, res, pathname) {
     return sendJson(res, 405, { error: '不支持的方法。' });
   }
 
+  if (pathname === `${PREFIX}/profile/rebuild` && req.method === 'POST') {
+    const body = await readBody(req);
+    const store = readStore();
+    const result = await rebuildProfile(store, { days: body.days });
+    saveStore(store);
+    return sendJson(res, 200, result);
+  }
   if (pathname === `${PREFIX}/claims`) {
     const store = readStore();
     if (req.method === 'GET' || req.method === 'HEAD') {
@@ -1546,9 +1556,164 @@ export {
   applyDraft,
   discardDraft,
   generateDigest,
+  rebuildProfile,
+  rebuildContext,
   statsFor,
   sessionsOn,
   upcomingDeadlines,
   shiftDateKey,
   dateKeyOf,
 };
+
+/* Profile rebuild ---------------------------------------------------------- */
+const REBUILD_DAYS = 90;
+
+function withinDays(value, days) {
+  const ms = Date.parse(String(value ?? ''));
+  return Number.isFinite(ms) && Date.now() - ms <= days * 86_400_000;
+}
+
+/** A compact, token-cheap view of everything added in the window. */
+function rebuildContext(store, days = REBUILD_DAYS) {
+  const active = (row) => !row.archivedAt;
+  const pick = (list, map, limit) => list.filter(active).slice(0, limit).map(map);
+  const tasks = store.tasks.filter((task) => active(task) && (withinDays(task.createdAt, days) || withinDays(task.updatedAt, days)));
+  const events = store.events.filter((event) => active(event) && withinDays(event.createdAt, days));
+  const logs = store.learningLogs.filter((log) => active(log) && withinDays(log.occurredAt, days));
+  const notes = store.knowledgeNotes.filter((note) => active(note) && withinDays(note.updatedAt, days));
+  const ideas = store.ideas.filter((idea) => active(idea) && withinDays(idea.createdAt, days));
+  const projects = store.projects.filter((project) => active(project) && withinDays(project.updatedAt, days));
+  const domainName = new Map(store.domains.map((domain) => [domain.id, domain.title]));
+  return {
+    window: {
+      days,
+      from: new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10),
+      to: todayKey(),
+    },
+    counts: {
+      tasks: tasks.length,
+      done: tasks.filter((task) => task.status === 'done').length,
+      events: events.length,
+      learningLogs: logs.length,
+      notes: notes.length,
+      ideas: ideas.length,
+      projects: projects.length,
+    },
+    tasks: pick(
+      [...tasks].sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))),
+      (task) => ({ title: task.title, status: task.status, dueDate: task.dueDate, plannedDate: task.plannedDate }),
+      60,
+    ),
+    overdue: tasks
+      .filter((task) => task.status !== 'done' && task.dueDate && task.dueDate < todayKey())
+      .slice(0, 20)
+      .map((task) => ({ title: task.title, dueDate: task.dueDate })),
+    events: pick(events, (event) => ({ title: event.title, startAt: event.startAt }), 30),
+    ideas: pick(ideas, (idea) => ({ title: idea.title, type: idea.type, status: idea.status }), 20),
+    notes: pick(notes, (note) => ({ title: note.title, domain: domainName.get(note.domainId) ?? null }), 15),
+    learning: {
+      minutes: logs.reduce((total, log) => total + (Number(log.minutes) || 0), 0),
+      byDomain: Object.fromEntries(
+        [...logs.reduce((map, log) => {
+          const name = domainName.get(log.domainId) ?? '其他';
+          map.set(name, (map.get(name) ?? 0) + (Number(log.minutes) || 0));
+          return map;
+        }, new Map()).entries()],
+      ),
+    },
+    projects: pick(projects, (project) => ({ title: project.title, status: project.status, deadline: project.deadline }), 15),
+    digests: (store.digests ?? []).slice(0, 5).map((digest) => ({ date: digest.date, headline: digest.headline })),
+    courses: sessionsOn(store, todayKey()).map((session) => session.name),
+    existingClaims: store.profile.claims
+      .filter((claim) => claim.status !== 'retired')
+      .map((claim) => ({ id: claim.id, text: claim.text, kind: claim.kind, status: claim.status })),
+  };
+}
+
+function rebuildPrompt(context) {
+  return [
+    '你在维护一个复旦学生的长期画像。下面是他最近三个月在知行台里新增的全部记录，以及已有的画像词条。',
+    '请做两件事：',
+    '1. 写一段 80–160 字的画像摘要（summary）：他是谁、时间怎么用、在意什么、有什么稳定的习惯或约束。用第二人称或第三人称都可以，但不要空话。',
+    '2. 提出最多 12 条值得长期记住的词条（claims），每条一句话、不超过 40 字，必须能从数据里找到依据；',
+    '   如果某条新词条取代了 existingClaims 里的旧条目，把旧条目的 id 放进 supersedes。',
+    '不要编造数据里没有的事实；宁可少写。若数据不足以支撑某个判断，就不要写。',
+    '只输出 JSON，不要 Markdown：',
+    '{"summary":"...","claims":[{"text":"...","kind":"fact|preference|habit|constraint","supersedes":"可选，旧词条 id"}]}',
+    '',
+    JSON.stringify(context, null, 2),
+  ].join('\n');
+}
+
+function parseRebuild(raw) {
+  if (!raw) return null;
+  const value = String(raw).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  const start = value.indexOf('{');
+  const end = value.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(value.slice(start, end + 1));
+    const summary = text(parsed.summary).slice(0, 400);
+    const claims = (Array.isArray(parsed.claims) ? parsed.claims : [])
+      .map((item) => ({
+        text: text(item?.text).slice(0, 120),
+        kind: ['fact', 'preference', 'habit', 'constraint'].includes(item?.kind) ? item.kind : 'preference',
+        supersedes: text(item?.supersedes) || null,
+      }))
+      .filter((item) => item.text)
+      .slice(0, 12);
+    if (!summary && !claims.length) return null;
+    return { summary, claims };
+  } catch {
+    return null;
+  }
+}
+
+/** Rebuild the summary + claims from the last `days` of activity. */
+async function rebuildProfile(store, options = {}) {
+  if (!llmRunner) {
+    throw new HttpError(503, '画像重建需要模型：当前没有可用的 LLM 服务。');
+  }
+  const days = clamp(options.days, 7, 365, REBUILD_DAYS);
+  const context = rebuildContext(store, days);
+  const raw = await llmRunner({
+    prompt: rebuildPrompt(context),
+    system: '你在为用户维护长期记忆，只输出 JSON。',
+  });
+  const parsed = parseRebuild(raw);
+  if (!parsed) throw new HttpError(502, '模型没有返回可用的画像结构，请重试。');
+  const now = nowIso();
+  const added = [];
+  let retired = 0;
+  if (parsed.summary) {
+    store.profile.summary = parsed.summary;
+    store.profile.summaryUpdatedAt = now;
+  }
+  for (const candidate of parsed.claims) {
+    if (candidate.supersedes) {
+      const old = store.profile.claims.find((claim) => claim.id === candidate.supersedes);
+      if (old && old.status !== 'retired') {
+        old.status = 'retired';
+        old.updatedAt = now;
+        retired += 1;
+      }
+    }
+    added.push(
+      addClaim(store, {
+        text: candidate.text,
+        kind: candidate.kind,
+        source: 'derived',
+        evidence: [`rebuild:${context.window.to}`],
+        confidence: 0.55,
+      }),
+    );
+  }
+  return {
+    summary: store.profile.summary,
+    summaryUpdatedAt: store.profile.summaryUpdatedAt,
+    added: added.length,
+    retired,
+    days,
+    claims: added.map((claim) => ({ id: claim.id, text: claim.text, kind: claim.kind, status: claim.status })),
+  };
+}

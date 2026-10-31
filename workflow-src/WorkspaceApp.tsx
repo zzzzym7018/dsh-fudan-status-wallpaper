@@ -151,6 +151,8 @@ type Claim = {
 type Profile = {
   nickname: string;
   school: string;
+  summary: string;
+  summaryUpdatedAt: string | null;
   claims: Claim[];
 };
 type DraftItem = {
@@ -390,6 +392,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
   const [digestRunning, setDigestRunning] = useState(false);
   const [openDraftId, setOpenDraftId] = useState<string | null>(null);
   const [draftBusy, setDraftBusy] = useState(false);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
   const [icsImporting, setIcsImporting] = useState(false);
   const [icsClearDemo, setIcsClearDemo] = useState(false);
   const [courseError, setCourseError] = useState("");
@@ -978,6 +981,33 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
       notify(reason instanceof Error ? reason.message : "处理失败，请重试", "error");
     } finally {
       setDraftBusy(false);
+    }
+  }
+
+  async function rebuildProfileNow() {
+    setRebuildBusy(true);
+    try {
+      const response = await fetch("/api/dsh-workflow/profile/rebuild", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ days: 90 }),
+      });
+      const result = (await response.json()) as {
+        summary?: string;
+        added?: number;
+        retired?: number;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(result.error || "重建失败。");
+      await loadWorkspace();
+      notify(
+        `画像已重建：新增 ${result.added ?? 0} 条词条${result.retired ? `，退役 ${result.retired} 条` : ""}`,
+        "success",
+      );
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "重建失败，请重试", "error");
+    } finally {
+      setRebuildBusy(false);
     }
   }
 
@@ -1625,6 +1655,8 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                   onReset={resetStore}
                   onSaveAi={saveAi}
                   onAddClaim={writeClaim}
+                  onRebuildProfile={rebuildProfileNow}
+                  rebuildBusy={rebuildBusy}
                   onConfirmClaim={(id) => touchClaim(id, { confirm: true })}
                   onDeleteClaim={removeClaim}
                 />
@@ -5184,6 +5216,8 @@ function SettingsView({
   onAddClaim,
   onConfirmClaim,
   onDeleteClaim,
+  onRebuildProfile,
+  rebuildBusy,
 }: {
   viewer: Viewer;
   profile: Profile | undefined;
@@ -5209,6 +5243,8 @@ function SettingsView({
   onAddClaim: (text: string, kind: Claim["kind"]) => Promise<void>;
   onConfirmClaim: (id: string) => Promise<void>;
   onDeleteClaim: (id: string) => Promise<void>;
+  onRebuildProfile: () => Promise<void>;
+  rebuildBusy: boolean;
 }) {
   const [updating, setUpdating] = useState("");
   const [nickname, setNickname] = useState(profile?.nickname ?? "FDUer");
@@ -5523,10 +5559,30 @@ function SettingsView({
               <p>{profile?.claims?.length ?? 0} 条长期记忆，agent 排日程时会先看这里。</p>
             </div>
           </div>
-          <span className="connection-status">
-            {(profile?.claims ?? []).filter((claim) => claim.status === "active").length} 条已确认
-          </span>
+          <button
+            className="button button--outline claim-rebuild"
+            type="button"
+            disabled={rebuildBusy}
+            onClick={onRebuildProfile}
+            title="把最近 90 天的记录和现有词条一起交给模型，重新写一份画像摘要和长期词条"
+          >
+            {rebuildBusy ? "重建中…" : "用最近 90 天重建"}
+          </button>
         </div>
+        {profile?.summary ? (
+          <div className="claim-summary">
+            <p className="eyebrow">PROFILE · 画像摘要</p>
+            <p>{profile.summary}</p>
+            {profile.summaryUpdatedAt ? (
+              <small>更新于 {formatRelative(profile.summaryUpdatedAt)}</small>
+            ) : null}
+          </div>
+        ) : (
+          <p className="settings-copy claim-summary-empty">
+            还没有画像摘要。点右上角「用最近 90 天重建」，会读最近三个月的任务、日程、学习记录、Ideas
+            和你已有的词条，写一段摘要并补充词条（新词条先记为待确认）。
+          </p>
+        )}
         <form
           className="claim-form"
           noValidate
