@@ -1513,6 +1513,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
               {activeView === "chat" ? (
                 <ChatView
                   profile={snapshot.profile}
+                  snapshot={snapshot}
                   onSend={sendChat}
                   onResolveDraft={resolveDraft}
                   draftBusy={draftBusy}
@@ -1721,6 +1722,7 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
       {openDraft ? (
         <DraftDialog
           draft={openDraft}
+          snapshot={snapshot}
           busy={draftBusy}
           onApply={() => resolveDraft(openDraft.id, "apply")}
           onDiscard={() => resolveDraft(openDraft.id, "discard")}
@@ -2764,11 +2766,13 @@ type ChatMessage = {
 
 function ChatView({
   profile,
+  snapshot,
   onSend,
   onResolveDraft,
   draftBusy,
 }: {
   profile: Profile;
+  snapshot: Snapshot | null;
   onSend: (
     message: string,
     history: Array<{ role: "user" | "assistant"; text: string }>,
@@ -2873,8 +2877,8 @@ function ChatView({
                             <span className={`draft-kind draft-kind--${item.kind}`}>
                               {draftKindLabel(item.kind)}
                             </span>
-                            <span>{draftItemTitle(item)}</span>
-                            <small>{draftItemWhen(item)}</small>
+                            <span>{draftItemTitle(item, snapshot)}</span>
+                            <small>{draftItemWhen(item, snapshot)}</small>
                           </li>
                         ))}
                       </ul>
@@ -3342,14 +3346,37 @@ function claimKindLabel(kind: Claim["kind"]) {
 function draftKindLabel(kind: DraftItem["kind"]) {
   return kind === "task" ? "任务" : kind === "event" ? "日程" : "课程";
 }
-function draftItemTitle(item: DraftItem) {
+function draftItemTitle(item: DraftItem, snapshot?: Snapshot | null) {
   const data = item.data ?? {};
-  return String(data.title ?? data.courseName ?? "未命名");
+  const direct = String(data.title ?? data.courseName ?? "").trim();
+  if (direct) return direct;
+  if (snapshot && item.id) {
+    if (item.kind === "task") {
+      const task = snapshot.tasks.find((row) => row.id === item.id);
+      if (task) return task.title;
+    }
+    if (item.kind === "event") {
+      const event = snapshot.events.find((row) => row.id === item.id);
+      if (event) return event.title;
+    }
+    if (item.kind === "courseSlot") {
+      const slot = snapshot.courseSlots.find((row) => row.id === item.id);
+      const course = slot ? snapshot.courses.find((row) => row.id === slot.courseId) : null;
+      if (course) return course.name;
+    }
+  }
+  return "未命名";
 }
-function draftItemWhen(item: DraftItem) {
+function draftItemWhen(item: DraftItem, snapshot?: Snapshot | null) {
   const data = item.data ?? {};
-  if (item.kind === "event" && data.startAt) {
-    return `${formatMonthDay(String(data.startAt))} ${formatTime(String(data.startAt))}–${formatTime(String(data.endAt ?? data.startAt))}`;
+  const existingEvent =
+    snapshot && item.id && item.kind === "event"
+      ? snapshot.events.find((row) => row.id === item.id)
+      : null;
+  const startAt = data.startAt ?? existingEvent?.startAt;
+  const endAt = data.endAt ?? existingEvent?.endAt;
+  if (item.kind === "event" && startAt) {
+    return `${formatMonthDay(String(startAt))} ${formatTime(String(startAt))}–${formatTime(String(endAt ?? startAt))}`;
   }
   if (item.kind === "task") {
     const parts = [];
@@ -3368,12 +3395,14 @@ function draftItemWhen(item: DraftItem) {
 
 function DraftDialog({
   draft,
+  snapshot,
   busy,
   onApply,
   onDiscard,
   onClose,
 }: {
   draft: Draft;
+  snapshot: Snapshot | null;
   busy: boolean;
   onApply: () => void;
   onDiscard: () => void;
@@ -3415,8 +3444,14 @@ function DraftDialog({
                 {draftKindLabel(item.kind)}
               </span>
               <span className="draft-main">
-                <strong>{draftItemTitle(item)}</strong>
-                <small>{item.op === "delete" ? "删除" : item.op === "update" ? "修改" : draftItemWhen(item)}</small>
+                <strong>{draftItemTitle(item, snapshot)}</strong>
+                <small>
+                  {item.op === "delete"
+                    ? "删除"
+                    : item.op === "update"
+                      ? `修改 · ${draftItemWhen(item, snapshot) || "无日期"}`
+                      : draftItemWhen(item, snapshot)}
+                </small>
               </span>
             </li>
           ))}

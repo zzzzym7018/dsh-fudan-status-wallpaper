@@ -1268,8 +1268,40 @@ function normalizeDraftItem(item) {
     data: item.data && typeof item.data === 'object' ? item.data : {},
   };
 }
+/** Fill in what an update/delete draft needs to describe itself. */
+function describeDraftItem(store, item) {
+  if (item.op === 'create') return item;
+  const table = { task: 'tasks', event: 'events', courseSlot: 'courseSlots' }[item.kind];
+  const row = (store[table] ?? []).find((entry) => entry.id === item.id);
+  if (!row) return item;
+  if (item.kind === 'task') {
+    return { ...item, data: { title: row.title, ...item.data } };
+  }
+  if (item.kind === 'event') {
+    return {
+      ...item,
+      data: { title: row.title, startAt: row.startAt, endAt: row.endAt, ...item.data },
+    };
+  }
+  const course = store.courses.find((entry) => entry.id === row.courseId);
+  return {
+    ...item,
+    data: {
+      courseName: course?.name ?? '',
+      weekday: row.weekday,
+      startPeriod: row.startPeriod,
+      endPeriod: row.endPeriod,
+      ...item.data,
+    },
+  };
+}
+
 function createDraft(store, data = {}) {
-  const items = (Array.isArray(data.items) ? data.items : []).slice(0, 20).map(normalizeDraftItem).filter(Boolean);
+  const items = (Array.isArray(data.items) ? data.items : [])
+    .slice(0, 20)
+    .map(normalizeDraftItem)
+    .filter(Boolean)
+    .map((item) => describeDraftItem(store, item));
   if (!items.length) throw new HttpError(400, '草稿里没有可用的改动。');
   const draft = {
     id: `draft-${crypto.randomUUID()}`,
