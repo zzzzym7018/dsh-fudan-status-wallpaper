@@ -25,6 +25,8 @@
 
 import {
   generateDigest,
+  readQuotaPoints,
+  recordQuotaPoint,
   readStore,
   registerWorkflowRoutes,
   saveStore,
@@ -356,6 +358,10 @@ async function composeSnapshot(ctx) {
     snapshot.total = balance.total;
     snapshot.granted = balance.granted;
     snapshot.toppedUp = balance.toppedUp;
+    // Sample on every read (and on the background tick below) so "spent
+    // today" survives a restart instead of living in per-origin localStorage.
+    recordQuotaPoint({ t: now, total: balance.total, currency: balance.currency });
+    snapshot.history = readQuotaPoints();
   } else {
     snapshot.code = balance.code;
     if (balance.status !== undefined) snapshot.status = balance.status;
@@ -410,6 +416,19 @@ function apply(ctx) {
   );
 
   registerWorkflowRoutes(ctx, bindHost);
+
+  // A background sample every ten minutes keeps a baseline even when the UI
+  // is closed, so the card can answer "how much did I spend today".
+  try {
+    ctx.effect(() => {
+      const timer = setInterval(() => {
+        composeSnapshot(ctx).catch(() => {});
+      }, 10 * 60_000);
+      return () => clearInterval(timer);
+    }, 'dsh-quota-wallpaper: balance sampling');
+  } catch (error) {
+    console.warn('[dsh-quota] sample timer unavailable', error?.message ?? error);
+  }
 
   // Model calls go through the harness LLM service, so each user's own
   // provider and key apply; this plugin never stores a credential.

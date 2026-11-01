@@ -105,6 +105,47 @@ function defaultSettings() {
 function emptyProfile() {
   return { nickname: 'FDUer', school: '复旦大学', claims: [], summary: '', summaryUpdatedAt: null };
 }
+const QUOTA_HISTORY_FILE = path.join(DATA_DIR, 'quota-history.json');
+const QUOTA_HISTORY_TTL = 30 * 86_400_000;
+const QUOTA_HISTORY_MAX = 4000;
+
+/** Balance samples live with the profile so they survive port/host changes. */
+export function readQuotaPoints() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(QUOTA_HISTORY_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.points) ? parsed.points : [];
+    const cutoff = Date.now() - QUOTA_HISTORY_TTL;
+    return list.filter((point) => point
+      && Number.isFinite(point.t)
+      && Number.isFinite(point.total)
+      && typeof point.currency === 'string'
+      && point.t >= cutoff);
+  } catch {
+    return [];
+  }
+}
+
+export function recordQuotaPoint(point) {
+  if (!point || !Number.isFinite(point.total)) return readQuotaPoints();
+  const points = readQuotaPoints();
+  const at = Number.isFinite(point.t) ? point.t : Date.now();
+  const last = points[points.length - 1];
+  const next = { t: at, total: point.total, currency: point.currency || 'CNY' };
+  if (last && last.currency === next.currency && at - last.t < 5 * 60_000) points[points.length - 1] = next;
+  else points.push(next);
+  const trimmed = points.slice(-QUOTA_HISTORY_MAX);
+  try {
+    ensureDir();
+    const tmp = `${QUOTA_HISTORY_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, points: trimmed }, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, QUOTA_HISTORY_FILE);
+    try { fs.chmodSync(QUOTA_HISTORY_FILE, 0o600); } catch { /* best effort */ }
+  } catch {
+    /* the quota card still works without history */
+  }
+  return trimmed;
+}
+
 const CHAT_FILE = path.join(DATA_DIR, 'chat.json');
 const MAX_CHAT_MESSAGES = 200;
 

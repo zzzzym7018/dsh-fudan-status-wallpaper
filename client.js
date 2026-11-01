@@ -615,6 +615,17 @@ window.__ModuleLoader__.load({
 
     function rememberBalance(data) {
       const at = Number.isFinite(data.fetchedAt) ? data.fetchedAt : Date.now();
+      // The host keeps the authoritative samples in the profile, so "spent
+      // today" survives restarts; localStorage alone is per origin (and the
+      // Web UI port changes every launch).
+      if (Array.isArray(data.history) && data.history.length > 0) {
+        balanceHistory = data.history
+          .filter((point) => point
+            && Number.isFinite(point.t)
+            && Number.isFinite(point.total)
+            && typeof point.currency === 'string')
+          .sort((left, right) => left.t - right.t);
+      }
       const last = balanceHistory[balanceHistory.length - 1];
       const point = { t: at, total: data.total, currency: data.currency };
       // One sample per five-minute bucket keeps two weeks of history small
