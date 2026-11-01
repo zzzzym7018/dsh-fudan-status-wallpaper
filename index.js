@@ -23,7 +23,18 @@
  * (see PRICE_TABLE) because the public API exposes no price endpoint.
  */
 
-import { registerWorkflowRoutes } from './workflow-host.js';
+import {
+  generateDigest,
+  readQuotaPoints,
+  recordQuotaPoint,
+  readStore,
+  registerWorkflowRoutes,
+  saveStore,
+  setLlmDiagnostics,
+  setLlmRunner,
+  setLlmUsage,
+} from './workflow-host.js';
+import { registerAgentTools } from './agent-tools.js';
 
 const name = 'dsh-quota-wallpaper';
 const inject = ['credentials', 'webServer'];
@@ -347,6 +358,10 @@ async function composeSnapshot(ctx) {
     snapshot.total = balance.total;
     snapshot.granted = balance.granted;
     snapshot.toppedUp = balance.toppedUp;
+    // Sample on every read (and on the background tick below) so "spent
+    // today" survives a restart instead of living in per-origin localStorage.
+    recordQuotaPoint({ t: now, total: balance.total, currency: balance.currency });
+    snapshot.history = readQuotaPoints();
   } else {
     snapshot.code = balance.code;
     if (balance.status !== undefined) snapshot.status = balance.status;
@@ -401,6 +416,134 @@ function apply(ctx) {
   );
 
   registerWorkflowRoutes(ctx, bindHost);
+
+  // A background sample every ten minutes keeps a baseline even when the UI
+  // is closed, so the card can answer "how much did I spend today".
+  try {
+    ctx.effect(() => {
+      const timer = setInterval(() => {
+        composeSnapshot(ctx).catch(() => {});
+      }, 10 * 60_000);
+      return () => clearInterval(timer);
+    }, 'dsh-quota-wallpaper: balance sampling');
+  } catch (error) {
+    console.warn('[dsh-quota] sample timer unavailable', error?.message ?? error);
+  }
+
+  // Model calls go through the harness LLM service, so each user's own
+  // provider and key apply; this plugin never stores a credential.
+  try {
+    ctx.inject(['llm'], (child) => {
+      child.effect(() => {
+        setLlmRunner(async ({ prompt, system }) => {
+          const ai = readStore().settings?.ai ?? {};
+          const messages = [];
+          if (system) messages.push({ role: 'system', content: [{ type: 'text', text: system }] });
+          messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] });
+          // Use whatever route this profile actually registered.
+          let providers = [];
+          try {
+            providers = (child.llm.listProviders?.() ?? []).map((entry) =>
+              typeof entry === 'string' ? entry : entry?.id ?? entry?.name ?? '',
+            ).filter(Boolean);
+          } catch {
+            providers = [];
+          }
+          const provider = providers.includes(ai.provider) ? ai.provider : providers[0] ?? ai.provider ?? 'deepseek-official';
+          const model = ai.model || 'deepseek-flash';
+          const kinds = new Set();
+          let output = '';
+          let usage = null;
+          try {
+            for await (const chunk of child.llm.stream({ provider, model, messages })) {
+              // Stream chunks carry `type` (text-delta, reasoning-delta, …);
+              // some terminal chunks carry `kind` (error, aborted, finish).
+              const type = chunk?.type ?? chunk?.kind ?? 'unknown';
+              kinds.add(String(type));
+              if (type === 'text-delta') {
+                output += chunk.text ?? '';
+              } else if (type === 'usage') {
+                const raw = chunk.usage ?? chunk;
+                usage = {
+                  input: raw.inputTokens ?? raw.promptTokens ?? raw.prompt_tokens ?? 0,
+                  output: raw.outputTokens ?? raw.completionTokens ?? raw.completion_tokens ?? 0,
+                };
+              } else if (type === 'error' || type === 'aborted' || chunk?.kind === 'error') {
+                const failure = chunk.failure ?? chunk.error ?? {};
+                throw new Error(`${type}: ${JSON.stringify(failure).slice(0, 240)}`);
+              }
+            }
+          } catch (error) {
+            setLlmDiagnostics({
+              provider, model, kinds: [...kinds], output: output.length,
+              preview: output.slice(0, 200),
+              lastError: String(error?.message ?? error).slice(0, 300),
+            });
+            throw error;
+          }
+          setLlmUsage(usage);
+          setLlmDiagnostics({
+            provider, model, kinds: [...kinds], output: output.length,
+            preview: output.slice(0, 200), usage, lastError: null,
+          });
+          if (!output) throw new Error('empty completion');
+          return output;
+        });
+        return () => setLlmRunner(null);
+      });
+    });
+  } catch (error) {
+    console.warn('[dsh-workflow] llm service unavailable', error?.message ?? error);
+  }
+
+  // Nightly digest. There is no daemon: the timer only runs while DSH is
+  // open, and the first tick after start catches up a missed evening.
+  try {
+    ctx.effect(() => {
+      let running = false;
+      const tick = async () => {
+        if (running) return;
+        running = true;
+        try {
+          const store = readStore();
+          const ai = store.settings?.ai ?? {};
+          if (ai.enabled === false) return;
+          const beijing = new Date(Date.now() + 8 * 3600_000);
+          const dateKey = beijing.toISOString().slice(0, 10);
+          const weekday = beijing.getUTCDay() || 7;
+          if (Array.isArray(ai.digestDays) && !ai.digestDays.includes(weekday)) return;
+          if (store.digests?.some((digest) => digest.date === dateKey)) return;
+          const [hour, minute] = String(ai.digestTime || '22:30').split(':').map(Number);
+          const nowMinutes = beijing.getUTCHours() * 60 + beijing.getUTCMinutes();
+          if (nowMinutes < hour * 60 + minute) return;
+          const entry = await generateDigest(store, { date: dateKey });
+          saveStore(store);
+          console.log(`[dsh-workflow] digest ready for ${entry.date} (${entry.source})`);
+        } catch (error) {
+          console.warn('[dsh-workflow] digest failed', error?.message ?? error);
+        } finally {
+          running = false;
+        }
+      };
+      const timer = setInterval(tick, 60_000);
+      void tick();
+      return () => clearInterval(timer);
+    }, 'dsh-quota-wallpaper: nightly digest');
+  } catch (error) {
+    console.warn('[dsh-workflow] digest scheduler unavailable', error?.message ?? error);
+  }
+
+  // Agent tools: natural language -> 知行台 drafts, profile, digest.
+  try {
+    ctx.inject(['tools'], (child) => {
+      child.effect(() => {
+        registerAgentTools(child);
+        return () => {};
+      });
+    });
+  } catch (error) {
+    console.warn('[dsh-workflow] tool registry unavailable', error?.message ?? error);
+  }
 }
 
 export { name, inject, apply };
