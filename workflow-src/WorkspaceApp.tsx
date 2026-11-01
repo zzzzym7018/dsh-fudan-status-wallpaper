@@ -1992,6 +1992,14 @@ function TodayView({
   const todayTasks = snapshot.tasks.filter((task) =>
     taskAppearsInToday(task, todayKey),
   );
+  const undatedTasks = snapshot.tasks.filter(
+    (task) =>
+      task.status !== "done" &&
+      !task.plannedDate &&
+      !task.dueDate &&
+      !task.startAt &&
+      !todayTasks.some((item) => item.id === task.id),
+  );
   const currentSession = todaySessions.find(
     (session) => session.startMinute <= nowMinute && nowMinute < session.endMinute,
   );
@@ -2048,7 +2056,7 @@ function TodayView({
         <div className="today-metrics">
           {[
             { label: "今日课程", value: todaySessions.length, note: "门课程" },
-            { label: "今日行动", value: todayTasks.filter((task) => task.status !== "done").length, note: "项待办" },
+            { label: "今日行动", value: todayTasks.filter((task) => task.status !== "done").length + undatedTasks.length, note: "项待办" },
             { label: "本周 DDL", value: deadlines.length, note: "个截止" },
             { label: "推进项目", value: snapshot.projects.length, note: "个进行中" },
           ].map((metric) => (
@@ -2265,7 +2273,7 @@ function TodayView({
                   </button>
                 </div>
               ))
-            ) : (
+            ) : undatedTasks.length ? null : (
               <EmptyState
                 title="今天还没有任务"
                 description="先添加一个具体、可完成的行动。"
@@ -2273,6 +2281,46 @@ function TodayView({
                 onAction={() => onOpenEditor("task")}
               />
             )}
+            {undatedTasks.length ? (
+              <>
+                <p className="task-section-label">
+                  未排期 · {undatedTasks.length}
+                  <span>还没有日期，点一下约个时间</span>
+                </p>
+                {undatedTasks.map((task) => (
+                  <div key={task.id} className="task-row task-row--undated">
+                    <input
+                      type="checkbox"
+                      aria-label={`完成 ${task.title}`}
+                      checked={false}
+                      onChange={() => onToggleTask(task)}
+                    />
+                    <button
+                      className="task-row-open"
+                      type="button"
+                      aria-label={`给「${task.title}」安排日期`}
+                      title="安排日期"
+                      onClick={() => onEditTask(task)}
+                    >
+                      <span className="task-row-title">{task.title}</span>
+                      <span className="task-row-due is-empty">排期</span>
+                      <span className="task-row-open-mark" aria-hidden="true">
+                        ›
+                      </span>
+                    </button>
+                    <button
+                      className="row-action row-action--delete"
+                      type="button"
+                      aria-label={`删除任务 ${task.title}`}
+                      title="删除"
+                      onClick={() => onDeleteTask(task)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </>
+            ) : null}
           </div>
         </section>
         <section className="panel compact-panel context-panel context-panel--ddl">
