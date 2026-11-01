@@ -1372,14 +1372,40 @@ function statsFor(store, dateKey) {
   const courses = sessionsOn(store, dateKey);
   const due = store.tasks.filter((task) => !task.archivedAt && task.dueDate === dateKey);
   const planned = store.tasks.filter((task) => !task.archivedAt && task.plannedDate === dateKey);
+  const open = openTasksFor(store, dateKey);
   const events = store.events
     .filter((event) => !event.archivedAt && dateKeyOf(event.startAt) === dateKey)
     .map((event) => ({ title: event.title, start: event.startAt, end: event.endAt }));
   const done = store.tasks.filter(
     (task) => !task.archivedAt && task.status === 'done' && dateKeyOf(task.updatedAt) === dateKey,
   );
-  return { dateKey, courses, due, planned, events, done };
+  return { dateKey, courses, due, planned, open, events, done };
 }
+/** Unfinished tasks a person could act on now: overdue, today, or undated. */
+function openTasksFor(store, dateKey) {
+  const dated = [];
+  const undated = [];
+  for (const task of store.tasks) {
+    if (task.archivedAt || task.status === 'done') continue;
+    const planned = task.plannedDate ?? '';
+    const due = task.dueDate ?? '';
+    const startsToday = Boolean(task.startAt) && dateKeyOf(task.startAt) === dateKey;
+    if (!planned && !due && !startsToday) {
+      undated.push(task);
+      continue;
+    }
+    if ((planned && planned <= dateKey) || (due && due <= dateKey) || startsToday) dated.push(task);
+  }
+  const rank = (task) => {
+    if (task.dueDate && task.dueDate < dateKey) return 0; // overdue
+    if (task.dueDate === dateKey || task.plannedDate === dateKey) return 1;
+    return 2;
+  };
+  dated.sort((left, right) => rank(left) - rank(right)
+    || String(left.dueDate ?? left.plannedDate ?? '').localeCompare(String(right.dueDate ?? right.plannedDate ?? '')));
+  return dated.concat(undated);
+}
+
 function upcomingDeadlines(store, dateKey, days = 3) {
   const limit = shiftDateKey(dateKey, days);
   return store.tasks
@@ -1524,9 +1550,7 @@ async function generateDigest(store, options = {}) {
   const tomorrow = statsFor(store, shiftDateKey(dateKey, 1));
   const deadlines = upcomingDeadlines(store, dateKey, 3);
   const weather = await fetchWeather();
-  const openToday = [...today.due, ...today.planned].filter(
-    (task, index, list) => list.findIndex((item) => item.id === task.id) === index,
-  );
+  const openToday = today.open;
   const context = {
     today: { dateKey, courses: today.courses, tasks: openToday },
     yesterday: { done: yesterday.done.map((task) => ({ title: task.title, projectId: task.projectId })), due: yesterday.due },
@@ -1603,6 +1627,7 @@ export {
   discardDraft,
   generateDigest,
   chat,
+  openTasksFor,
   rebuildProfile,
   rebuildContext,
   statsFor,
@@ -1794,8 +1819,13 @@ function chatContext(store) {
   return {
     today: todayKey(),
     courses: today.courses.map((course) => `${course.start} ${course.name}${course.location ? `（${course.location}）` : ''}`),
-    openTasks: today.due.filter((task) => task.status !== 'done').slice(0, 8).map((task) => ({
-      id: task.id, title: task.title, dueDate: task.dueDate,
+    openTasks: openTasksFor(store, todayKey()).slice(0, 20).map((task) => ({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      plannedDate: task.plannedDate,
+      dueDate: task.dueDate,
+      overdue: Boolean(task.dueDate && task.dueDate < todayKey()),
     })),
     deadlines: upcomingDeadlines(store, todayKey(), 5).slice(0, 6).map((task) => ({ id: task.id, title: task.title, dueDate: task.dueDate })),
     profile: {
@@ -1814,7 +1844,8 @@ function chatPrompt(context, history, message) {
     '- create_event: {title, startAt, endAt}（ISO，必须带 +08:00）',
     '- update_task: {id, status?, dueDate?}',
     '- remember: {text, kind}（kind: fact/preference/habit/constraint，仅在用户明确说“记住”时）',
-    '今天和用户画像如下；回答要短，不要编造数据里没有的课或任务。',
+    '下面 openTasks 已经包含「今天要做的」和「还没排日期的」未完成任务，overdue 表示已逾期；',
+    '只有 openTasks 为空时才可以说没有待办。回答要短，不要编造数据里没有的课或任务。',
     JSON.stringify(context, null, 2),
     '',
     '最近的对话：',

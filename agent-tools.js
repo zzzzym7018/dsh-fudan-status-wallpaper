@@ -13,6 +13,7 @@ import {
   dateKeyOf,
   generateDigest,
   listClaims,
+  openTasksFor,
   readStore,
   rebuildProfile,
   saveStore,
@@ -114,12 +115,13 @@ export function registerAgentTools(ctx) {
         return {
           date,
           courses: stats.courses,
-          tasks: stats.due.concat(stats.planned).map((task) => ({
+          tasks: openTasksFor(store, date).map((task) => ({
             id: task.id,
             title: task.title,
             status: task.status,
             plannedDate: task.plannedDate,
             dueDate: task.dueDate,
+            overdue: Boolean(task.dueDate && task.dueDate < date),
           })),
           events: stats.events,
           deadlines: upcomingDeadlines(store, date, 3).map((task) => ({
