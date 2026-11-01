@@ -105,6 +105,31 @@ function defaultSettings() {
 function emptyProfile() {
   return { nickname: 'FDUer', school: '复旦大学', claims: [], summary: '', summaryUpdatedAt: null };
 }
+const CHAT_FILE = path.join(DATA_DIR, 'chat.json');
+const MAX_CHAT_MESSAGES = 200;
+
+function readChatMessages() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(CHAT_FILE, 'utf8'));
+    return Array.isArray(parsed?.messages) ? parsed.messages : [];
+  } catch {
+    return [];
+  }
+}
+function saveChatMessages(messages) {
+  ensureDir();
+  const trimmed = messages.slice(-MAX_CHAT_MESSAGES);
+  const tmp = `${CHAT_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ version: 1, messages: trimmed }, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, CHAT_FILE);
+  try { fs.chmodSync(CHAT_FILE, 0o600); } catch { /* best effort */ }
+  return trimmed;
+}
+function clearChatMessages() {
+  saveChatMessages([]);
+  return { ok: true };
+}
+
 function emptyStore() {
   return {
     version: STORE_VERSION,
@@ -903,6 +928,15 @@ async function handleWorkspace(req, res, pathname) {
     return sendJson(res, 405, { error: '不支持的方法。' });
   }
 
+  if (pathname === `${PREFIX}/chat/history`) {
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      return sendJson(res, 200, { messages: readChatMessages() });
+    }
+    if (req.method === 'DELETE') {
+      return sendJson(res, 200, clearChatMessages());
+    }
+    return sendJson(res, 405, { error: '不支持的方法。' });
+  }
   if (pathname === `${PREFIX}/chat` && req.method === 'POST') {
     const body = await readBody(req);
     const store = readStore();
@@ -1659,6 +1693,8 @@ export {
   discardDraft,
   generateDigest,
   chat,
+  readChatMessages,
+  saveChatMessages,
   openTasksFor,
   rebuildProfile,
   rebuildContext,
@@ -1959,13 +1995,16 @@ async function chat(store, { message, history }) {
   const prompt = text(message).slice(0, 2000);
   if (!prompt) throw new HttpError(400, '说点什么再发。');
   if (!llmRunner) throw new HttpError(503, '对话需要模型：当前没有可用的 LLM 服务。');
+  const stored = readChatMessages();
+  const recent = stored.slice(-6).map((item) => ({ role: item.role, text: item.text }));
   const context = chatContext(store);
+  const turns = recent.length ? recent : Array.isArray(history) ? history : [];
   let parsed = null;
   for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
     const raw = await llmRunner({
       prompt: attempt === 0
-        ? chatPrompt(context, Array.isArray(history) ? history : [], prompt)
-        : `${chatPrompt(context, Array.isArray(history) ? history : [], prompt)}\n\n上一次没有按 JSON 回复，请只输出 JSON。`,
+        ? chatPrompt(context, turns, prompt)
+        : `${chatPrompt(context, turns, prompt)}\n\n上一次没有按 JSON 回复，请只输出 JSON。`,
       system: '你在知行台里做日程助理，只输出 JSON。',
     });
     recordUsage(store, takeLlmUsage());
@@ -1984,9 +2023,21 @@ async function chat(store, { message, history }) {
   const draft = items.length
     ? createDraft(store, { items, reason: '对话里说的改动', source: 'agent' })
     : null;
+  const now = nowIso();
+  const userMessage = { id: `msg-${crypto.randomUUID()}`, role: 'user', text: prompt, createdAt: now };
+  const assistantMessage = {
+    id: `msg-${crypto.randomUUID()}`,
+    role: 'assistant',
+    text: parsed.reply,
+    draftId: draft?.id ?? null,
+    remembered: remember.map((action) => text(action.data.text)),
+    createdAt: now,
+  };
+  saveChatMessages([...stored, userMessage, assistantMessage]);
   return {
     reply: parsed.reply,
     draft,
-    remembered: remember.map((action) => text(action.data.text)),
+    remembered: assistantMessage.remembered,
+    messages: [userMessage, assistantMessage],
   };
 }

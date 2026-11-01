@@ -942,16 +942,30 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
     }
   }
 
-  async function sendChat(message: string, history: Array<{ role: "user" | "assistant"; text: string }>) {
+  async function loadChatHistory() {
+    const response = await fetch("/api/dsh-workflow/chat/history");
+    if (!response.ok) throw new Error("对话记录暂时读不到。");
+    const result = (await response.json()) as { messages?: ChatMessage[] };
+    return result.messages ?? [];
+  }
+
+  async function clearChatHistory() {
+    const response = await fetch("/api/dsh-workflow/chat/history", { method: "DELETE" });
+    if (!response.ok) throw new Error("清空失败。");
+    notify("对话记录已清空", "warning");
+  }
+
+  async function sendChat(message: string) {
     const response = await fetch("/api/dsh-workflow/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message, history }),
+      body: JSON.stringify({ message }),
     });
     const result = (await response.json()) as {
       reply?: string;
       draft?: Draft | null;
       remembered?: string[];
+      messages?: ChatMessage[];
       error?: string;
     };
     if (response.status === 404) {
@@ -1515,6 +1529,8 @@ export function WorkspaceApp({ initialViewer }: { initialViewer: Viewer }) {
                   profile={snapshot.profile}
                   snapshot={snapshot}
                   onSend={sendChat}
+                  onLoadHistory={loadChatHistory}
+                  onClearHistory={clearChatHistory}
                   onResolveDraft={resolveDraft}
                   draftBusy={draftBusy}
                 />
@@ -2759,6 +2775,8 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  createdAt?: string;
+  draftId?: string | null;
   draft?: Draft | null;
   remembered?: string[];
   failed?: boolean;
@@ -2768,64 +2786,102 @@ function ChatView({
   profile,
   snapshot,
   onSend,
+  onLoadHistory,
+  onClearHistory,
   onResolveDraft,
   draftBusy,
 }: {
   profile: Profile;
   snapshot: Snapshot | null;
-  onSend: (
-    message: string,
-    history: Array<{ role: "user" | "assistant"; text: string }>,
-  ) => Promise<{ reply?: string; draft?: Draft | null; remembered?: string[] }>;
+  onSend: (message: string) => Promise<{
+    reply?: string;
+    draft?: Draft | null;
+    remembered?: string[];
+    messages?: ChatMessage[];
+  }>;
+  onLoadHistory: () => Promise<ChatMessage[]>;
+  onClearHistory: () => Promise<void>;
   onResolveDraft: (id: string, action: "apply" | "discard") => Promise<void>;
   draftBusy: boolean;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    onLoadHistory()
+      .then((history) => {
+        if (!cancelled) setMessages(history);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "对话记录读不到");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onLoadHistory]);
 
   useEffect(() => {
     const list = listRef.current;
     if (list) list.scrollTop = list.scrollHeight;
   }, [messages, sending]);
 
-  const suggestions = [
-    "今天还有什么没做完？",
-    "帮我把周三晚上空出来复习",
-    "这周有哪几个 DDL？",
-  ];
+  const suggestions = ["今天还有什么没做完？", "帮我把周三晚上空出来复习", "这周有哪几个 DDL？"];
+
+  function draftFor(message: ChatMessage) {
+    if (message.draft) return message.draft;
+    if (message.draftId) return snapshot?.drafts.find((draft) => draft.id === message.draftId) ?? null;
+    return null;
+  }
 
   async function send(text: string) {
     const message = text.trim();
     if (!message || sending) return;
     setError("");
-    const history = messages
-      .slice(-6)
-      .map((item) => ({ role: item.role, text: item.text }));
-    const mine: ChatMessage = { id: crypto.randomUUID(), role: "user", text: message };
-    setMessages((items) => [...items, mine]);
     setInput("");
+    const tempId = `temp-${crypto.randomUUID()}`;
+    setMessages((items) => [...items, { id: tempId, role: "user", text: message }]);
     setSending(true);
     try {
-      const result = await onSend(message, history);
+      const result = await onSend(message);
+      const returned = result.messages ?? [];
+      const assistant = returned.find((item) => item.role === "assistant");
       setMessages((items) => [
-        ...items,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text: result.reply || "好的。",
-          draft: result.draft ?? null,
-          remembered: result.remembered ?? [],
-        },
+        ...items.filter((item) => item.id !== tempId),
+        ...(returned.length
+          ? returned
+          : [
+              { id: `local-${crypto.randomUUID()}`, role: "user" as const, text: message },
+              {
+                id: `local-${crypto.randomUUID()}`,
+                role: "assistant" as const,
+                text: result.reply || "好的。",
+                draft: result.draft ?? null,
+                remembered: result.remembered ?? [],
+              },
+            ]),
       ]);
+      if (assistant?.draftId === null && result.draft) {
+        // The server stored the draft id; keep it for this session too.
+        setMessages((items) =>
+          items.map((item) =>
+            item.id === assistant?.id ? { ...item, draft: result.draft ?? null } : item,
+          ),
+        );
+      }
     } catch (reason) {
       const detail = reason instanceof Error ? reason.message : "发送失败，请重试。";
       setError(detail);
       setMessages((items) => [
-        ...items,
-        { id: crypto.randomUUID(), role: "assistant", text: detail, failed: true },
+        ...items.filter((item) => item.id !== tempId),
+        { id: `failed-${crypto.randomUUID()}`, role: "assistant", text: detail, failed: true },
       ]);
     } finally {
       setSending(false);
@@ -2839,17 +2895,30 @@ function ChatView({
           <p className="eyebrow">ASSISTANT</p>
           <h2>和知行台说话</h2>
           <p>
-            它知道你的课表、任务、DDL 和画像。要改数据时会先给草稿，你确认了才写入。
+            它知道你的课表、任务、DDL 和画像。要改数据时会先给草稿，你确认了才写入；对话记录存在本机。
           </p>
         </div>
-        <span className="connection-status">
-          {profile.summary ? "已读画像" : "画像为空"}
-        </span>
+        <div className="chat-intro-actions">
+          <span className="connection-status">{profile.summary ? "已读画像" : "画像为空"}</span>
+          <button
+            className="button button--ghost"
+            type="button"
+            disabled={!messages.length || sending}
+            onClick={async () => {
+              await onClearHistory();
+              setMessages([]);
+            }}
+          >
+            清空对话
+          </button>
+        </div>
       </section>
 
       <section className="panel chat-panel">
         <div className="chat-list" ref={listRef} aria-live="polite">
-          {messages.length === 0 ? (
+          {loading ? (
+            <div className="chat-empty">正在读本地记录…</div>
+          ) : messages.length === 0 ? (
             <div className="chat-empty">
               <p>试试这些：</p>
               <div className="chat-suggestions">
@@ -2861,50 +2930,56 @@ function ChatView({
               </div>
             </div>
           ) : (
-            messages.map((message) => (
-              <div key={message.id} className={`chat-row chat-row--${message.role}`}>
-                <div className={`chat-bubble ${message.failed ? "is-failed" : ""}`}>
-                  <p>{message.text}</p>
-                  {message.remembered?.length ? (
-                    <p className="chat-memory-note">已记住：{message.remembered.join("、")}</p>
-                  ) : null}
-                  {message.draft ? (
-                    <div className="chat-draft">
-                      <p className="eyebrow">待确认 · {message.draft.items.length} 条改动</p>
-                      <ul>
-                        {message.draft.items.map((item, index) => (
-                          <li key={`${item.kind}-${index}`}>
-                            <span className={`draft-kind draft-kind--${item.kind}`}>
-                              {draftKindLabel(item.kind)}
-                            </span>
-                            <span>{draftItemTitle(item, snapshot)}</span>
-                            <small>{draftItemWhen(item, snapshot)}</small>
-                          </li>
-                        ))}
-                      </ul>
-                      <div className="chat-draft-actions">
-                        <button
-                          className="button button--outline"
-                          type="button"
-                          disabled={draftBusy}
-                          onClick={() => void onResolveDraft(message.draft!.id, "discard")}
-                        >
-                          放弃
-                        </button>
-                        <button
-                          className="button button--primary"
-                          type="button"
-                          disabled={draftBusy}
-                          onClick={() => void onResolveDraft(message.draft!.id, "apply")}
-                        >
-                          确认写入
-                        </button>
+            messages.map((message) => {
+              const draft = draftFor(message);
+              const handled = message.role === "assistant" && message.draftId && !draft;
+              return (
+                <div key={message.id} className={`chat-row chat-row--${message.role}`}>
+                  <div className={`chat-bubble ${message.failed ? "is-failed" : ""}`}>
+                    <p>{message.text}</p>
+                    {message.remembered?.length ? (
+                      <p className="chat-memory-note">已记住：{message.remembered.join("、")}</p>
+                    ) : null}
+                    {draft ? (
+                      <div className="chat-draft">
+                        <p className="eyebrow">待确认 · {draft.items.length} 条改动</p>
+                        <ul>
+                          {draft.items.map((item, index) => (
+                            <li key={`${item.kind}-${index}`}>
+                              <span className={`draft-kind draft-kind--${item.kind}`}>
+                                {draftKindLabel(item.kind)}
+                              </span>
+                              <span>{draftItemTitle(item, snapshot)}</span>
+                              <small>{draftItemWhen(item, snapshot)}</small>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="chat-draft-actions">
+                          <button
+                            className="button button--outline"
+                            type="button"
+                            disabled={draftBusy}
+                            onClick={() => void onResolveDraft(draft.id, "discard")}
+                          >
+                            放弃
+                          </button>
+                          <button
+                            className="button button--primary"
+                            type="button"
+                            disabled={draftBusy}
+                            onClick={() => void onResolveDraft(draft.id, "apply")}
+                          >
+                            确认写入
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
+                    ) : handled ? (
+                      <p className="chat-draft-done">这批改动已处理</p>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
           {sending ? (
             <div className="chat-row chat-row--assistant">
